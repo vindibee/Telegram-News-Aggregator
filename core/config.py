@@ -23,7 +23,7 @@ MAX_POSTS = 10
 MAX_TEXT = 4096
 MAX_CAPTION = 1024
 
-# Список каналов
+# Список каналов nen
 CHANNELS = [
     {"label": "🎮 Игромания", "username": "igromania"},
     {"label": "📱 Wylsacom Red", "username": "wylsared"},
