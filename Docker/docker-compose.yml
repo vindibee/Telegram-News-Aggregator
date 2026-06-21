@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      # Берет данные из .env файла
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASS:-postgres}
+      POSTGRES_DB: ${DB_NAME:-news_db}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Healthcheck гарантирует, что БД готова принимать подключения
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  bot:
+    build: .
+    restart: always
+    env_file:
+      - .env
+    # Бот будет ждать, пока БД не пройдет healthcheck
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
