@@ -1,148 +1,208 @@
-import io
-import asyncio
+"""Хендлеры бота.
+
+Слой намеренно «тонкий»: разбор пользовательского ввода, вызов сервиса и
+делегирование отрисовки. Ни HTTP, ни SQL здесь нет.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
 from html import escape
-from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InputMediaPhoto, InputMediaVideo, BufferedInputFile
-from aiogram.filters import CommandStart
 
-from core.config import CHANNELS, MAX_TEXT, MAX_CAPTION
-from core.logger import logger
-from db.repo import NewsRepo
-from services.parser import parse_channel
-from tg_bot.callbacks import ChannelCB, ParseCB, PostCB
-from tg_bot.keyboards import kb_channels, kb_posts, kb_back
+from aiogram import F, Router
+from aiogram.filters import Command, CommandStart
+from aiogram.types import CallbackQuery, Message
 
-router = Router()
+from core.config import Settings
+from core.logger import get_logger
+from db.models import NewsPost
+from services.cooldown import CooldownStorage
+from services.news_service import NewsService
+from tg_bot.callbacks import ACTION_CHANNELS, ChannelCB, MenuCB, PostCB, RefreshCB
+from tg_bot.keyboards import kb_channels, kb_posts, kb_to_channels
+from tg_bot.utils import get_message, safe_edit_text
+from tg_bot.views import PostRenderer
 
-# Хранилище кулдаунов (в памяти)
-_cooldowns = {}
+logger = get_logger(__name__)
+
+router = Router(name="main")
+
+_GREETING = (
+    "👋 <b>Агрегатор новостей Telegram</b>\n\n"
+    "Выберите канал — я покажу последние записи и сохраню их в базу."
+)
+_HELP = (
+    "ℹ️ <b>Как пользоваться</b>\n\n"
+    "/start — список каналов\n"
+    "/help — эта справка\n\n"
+    "В списке постов кнопка «🔄 Обновить» подтягивает свежие записи из канала."
+)
+_CHOOSE_CHANNEL = "📡 Выберите канал:"
+_UNKNOWN_CHANNEL = "Этот канал больше не поддерживается."
+_STALE_MESSAGE = "Сообщение устарело, отправьте /start."
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message):
-    await message.answer("👋 Выберите канал для чтения:", reply_markup=kb_channels(CHANNELS))
+async def cmd_start(message: Message, settings: Settings) -> None:
+    """Приветствие и список каналов."""
+    await message.answer(_GREETING, reply_markup=kb_channels(settings.channels))
 
 
-@router.callback_query(F.data == "to_list")
-async def back_to_channels(callback: CallbackQuery):
-    await callback.message.edit_text("Выберите канал:", reply_markup=kb_channels(CHANNELS))
+@router.message(Command("help"))
+async def cmd_help(message: Message) -> None:
+    """Краткая справка по боту."""
+    await message.answer(_HELP, reply_markup=kb_to_channels())
+
+
+@router.callback_query(MenuCB.filter(F.action == ACTION_CHANNELS))
+async def show_channels(callback: CallbackQuery, settings: Settings) -> None:
+    """Возврат к списку каналов."""
+    await callback.answer()
+    message = get_message(callback)
+    if message is None:
+        return
+    await safe_edit_text(message, _CHOOSE_CHANNEL, kb_channels(settings.channels))
 
 
 @router.callback_query(ChannelCB.filter())
-async def show_channel(callback: CallbackQuery, callback_data: ChannelCB, repo: NewsRepo, http_session):
-    """Отображение списка постов канала. Если пусто - запускает парсинг."""
-    username = callback_data.username
-    posts = await repo.get_recent_posts(username)
+async def show_channel(
+    callback: CallbackQuery,
+    callback_data: ChannelCB,
+    service: NewsService,
+    settings: Settings,
+) -> None:
+    """Список сохранённых постов канала; при пустой базе — первичный парсинг."""
+    await callback.answer()
 
+    message = get_message(callback)
+    if message is None:
+        return
+
+    username = await _resolve_channel(callback, settings, callback_data.username)
+    if username is None:
+        return
+
+    posts = await service.get_posts(username)
     if not posts:
-        await handle_parsing(callback, username, repo, http_session)
+        await _refresh_channel(message, service, settings, username)
         return
 
-    await callback.message.edit_text(
-        f"📋 Новости <b>@{escape(username)}</b>:",
-        reply_markup=kb_posts(posts, username)
-    )
+    await _show_posts(message, settings, username, posts, header="📋 Записи")
 
 
-@router.callback_query(ParseCB.filter())
-async def force_parse(callback: CallbackQuery, callback_data: ParseCB, repo: NewsRepo, http_session):
-    """Принудительный запуск парсинга по кнопке 'Обновить'."""
-    username = callback_data.username
-    # Простая реализация антиспама
-    import time
-    user_id = callback.from_user.id
-    if user_id in _cooldowns and time.time() - _cooldowns[user_id] < 60:
-        await callback.answer("⏳ Подождите минуту перед обновлением.", show_alert=True)
-        return
-    _cooldowns[user_id] = time.time()
-
-    await handle_parsing(callback, username, repo, http_session)
-
-
-async def handle_parsing(callback: CallbackQuery, username: str, repo: NewsRepo, http_session):
-    """Общая логика парсинга и сохранения в БД."""
-    await callback.message.edit_text(f"🔄 Парсинг @{username}...")
-
-    posts, error = await parse_channel(http_session, username)
-    if error:
-        await callback.message.edit_text(f"❌ {error}", reply_markup=kb_channels(CHANNELS))
+@router.callback_query(RefreshCB.filter())
+async def refresh_channel(
+    callback: CallbackQuery,
+    callback_data: RefreshCB,
+    service: NewsService,
+    settings: Settings,
+    cooldown: CooldownStorage,
+) -> None:
+    """Принудительное обновление канала с защитой от спама."""
+    message = get_message(callback)
+    if message is None:
+        await callback.answer(_STALE_MESSAGE, show_alert=True)
         return
 
-    added = 0
-    for p in posts:
-        if await repo.save_post(username, p["post_time"], p["text"], p["media"]):
-            added += 1
+    username = await _resolve_channel(callback, settings, callback_data.username)
+    if username is None:
+        return
 
-    db_posts = await repo.get_recent_posts(username)
-    await callback.message.edit_text(
-        f"✅ Обновлено! Новых: <b>{added}</b>.\n\nВыберите пост:",
-        reply_markup=kb_posts(db_posts, username)
-    )
+    # Кулдаун — на пару «пользователь + канал»: чужие каналы не блокируются.
+    key = (callback.from_user.id, username)
+    remaining = cooldown.remaining(key)
+    if remaining > 0:
+        await callback.answer(
+            f"⏳ Обновление доступно через {int(remaining) + 1} с.", show_alert=True
+        )
+        return
+
+    cooldown.touch(key)
+    await callback.answer("Обновляю…")
+    await _refresh_channel(message, service, settings, username)
 
 
 @router.callback_query(PostCB.filter())
-async def show_post(callback: CallbackQuery, callback_data: PostCB, repo: NewsRepo, http_session):
-    """Отображение конкретного поста с медиафайлами."""
+async def show_post(
+    callback: CallbackQuery,
+    callback_data: PostCB,
+    service: NewsService,
+    renderer: PostRenderer,
+) -> None:
+    """Карточка конкретного поста с медиа."""
     await callback.answer()
-    post = await repo.get_post_by_id(callback_data.id)
 
-    if not post:
-        await callback.message.edit_text("❌ Пост не найден.")
+    message = get_message(callback)
+    if message is None:
         return
 
-    content = escape(post.content or "")
-    text_full = content[:MAX_TEXT] or "<i>Нет текста</i>"
-    cap_full = content[:MAX_CAPTION] or ""
-    media_list = post.media_urls
-
-    # Отправляем заголовок поста
-    dt_str = post.post_time.strftime("%d.%m.%Y %H:%M")
-    await callback.message.edit_text(f"📍 Пост от <b>{dt_str}</b> | @{escape(post.channel_name)}")
-
-    # Логика отправки медиа
-    if not media_list:
-        await callback.message.answer(text_full)
-        await callback.message.answer("Вернуться к списку?", reply_markup=kb_back(post.channel_name))
+    post = await service.get_post(callback_data.id)
+    if post is None:
+        await safe_edit_text(message, "❌ Пост не найден.", kb_to_channels())
         return
 
-    # Загружаем медиа в память
-    async def fetch_media(url):
-        try:
-            async with http_session.get(url) as resp:
-                if resp.status == 200:
-                    return await resp.read()
-        except Exception:
-            pass
+    await renderer.render(message, post)
+
+
+@router.callback_query()
+async def unknown_callback(callback: CallbackQuery) -> None:
+    """Кнопка из устаревшей версии интерфейса."""
+    logger.info("Неизвестный callback: %r", callback.data)
+    await callback.answer(_STALE_MESSAGE, show_alert=True)
+
+
+async def _resolve_channel(
+    callback: CallbackQuery,
+    settings: Settings,
+    username: str,
+) -> str | None:
+    """Сверяет канал с белым списком.
+
+    Значение приходит от клиента и не может быть доверенным: без проверки
+    им можно было бы заставить бота обратиться к произвольному адресу.
+    """
+    channel = settings.channel_by_username(username)
+    if channel is None:
+        logger.warning("Запрошен канал вне белого списка: %r", username)
+        await callback.answer(_UNKNOWN_CHANNEL, show_alert=True)
         return None
+    return channel.username
 
-    tasks = [fetch_media(m["url"]) for m in media_list[:10]]  # Максимум 10 для Telegram альбома
-    files = await asyncio.gather(*tasks)
 
-    valid_media = [(media_list[i], files[i]) for i in range(len(files)) if files[i]]
+async def _refresh_channel(
+    message: Message,
+    service: NewsService,
+    settings: Settings,
+    username: str,
+) -> None:
+    """Парсит канал и показывает обновлённый список постов."""
+    await safe_edit_text(message, f"🔄 Загружаю записи @{escape(username)}…")
 
-    if not valid_media:
-        await callback.message.answer(f"⚠️ Медиа недоступны\n\n{text_full}")
-    elif len(valid_media) == 1:
-        meta, data = valid_media[0]
-        f = BufferedInputFile(data, filename="media")
-        if meta["type"] == "photo":
-            await callback.message.answer_photo(f, caption=cap_full)
-        else:
-            await callback.message.answer_video(f, caption=cap_full)
-    else:
-        # Отправка медиагруппы (альбома)
-        group = []
-        for i, (meta, data) in enumerate(valid_media):
-            caption = cap_full if i == 0 else ""
-            f = BufferedInputFile(data, filename=f"media_{i}")
-            if meta["type"] == "photo":
-                group.append(InputMediaPhoto(media=f, caption=caption))
-            else:
-                group.append(InputMediaVideo(media=f, caption=caption))
-        try:
-            await callback.message.answer_media_group(group)
-        except Exception as e:
-            logger.error(f"Media group error: {e}")
-            await callback.message.answer(f"⚠️ Ошибка отправки медиа\n\n{text_full}")
+    result = await service.refresh(username)
+    await _show_posts(
+        message,
+        settings,
+        username,
+        result.posts,
+        header=f"✅ Обновлено, новых записей: <b>{result.added}</b>",
+    )
 
-    await callback.message.answer("Вернуться к списку?", reply_markup=kb_back(post.channel_name))
+
+async def _show_posts(
+    message: Message,
+    settings: Settings,
+    username: str,
+    posts: Sequence[NewsPost],
+    header: str,
+) -> None:
+    """Единая точка отрисовки списка постов (DRY для всех сценариев)."""
+    if not posts:
+        await safe_edit_text(
+            message,
+            f"📭 Для @{escape(username)} пока нет сохранённых записей.",
+            kb_to_channels(),
+        )
+        return
+
+    text = f"{header} · <b>@{escape(username)}</b>\n\nВыберите запись:"
+    await safe_edit_text(message, text, kb_posts(posts, username, settings.display_timezone))

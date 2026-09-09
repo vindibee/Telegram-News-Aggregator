@@ -1,32 +1,46 @@
-version: '3.8'
-
+# Запуск из корня репозитория:
+#   docker compose -f Docker/docker-compose.yml up -d --build
 services:
   db:
     image: postgres:15-alpine
-    restart: always
+    container_name: news_db
+    restart: unless-stopped
     environment:
-      # Берет данные из .env файла
       POSTGRES_USER: ${DB_USER:-postgres}
       POSTGRES_PASSWORD: ${DB_PASS:-postgres}
       POSTGRES_DB: ${DB_NAME:-news_db}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    # Healthcheck гарантирует, что БД готова принимать подключения
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      # -d обязателен: без имени БД pg_isready проверяет базу postgres,
+      # которая готова раньше, чем создастся целевая.
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-news_db}"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 10s
 
   bot:
-    build: .
-    restart: always
+    build:
+      # Контекст — корень проекта, иначе COPY не увидит исходники.
+      context: ..
+      dockerfile: Docker/Dockerfile
+    container_name: news_bot
+    restart: unless-stopped
     env_file:
-      - .env
-    # Бот будет ждать, пока БД не пройдет healthcheck
+      - ../.env
+    environment:
+      # Внутри compose-сети хост БД — имя сервиса, независимо от значения в .env.
+      DB_HOST: db
+      DB_PORT: 5432
     depends_on:
       db:
         condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   pgdata:

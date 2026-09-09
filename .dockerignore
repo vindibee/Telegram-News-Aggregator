@@ -1,0 +1,15 @@
+.git
+.gitignore
+.idea
+.venv
+venv
+__pycache__
+**/__pycache__
+*.py[cod]
+.env
+.env.example
+Docker
+README.md
+.pytest_cache
+.mypy_cache
+.ruff_cache

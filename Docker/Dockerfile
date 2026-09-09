@@ -1,15 +1,28 @@
-# Используем slim версию для уменьшения веса образа
-FROM python:3.11-slim
+# syntax=docker/dockerfile:1
+# Контекст сборки — корень репозитория (см. docker-compose.yml).
+FROM python:3.11-slim AS runtime
 
-# Устанавливаем рабочую директорию внутри контейнера
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
 WORKDIR /app
 
-# Копируем requirements отдельно для кэширования слоев Docker
-COPY requirements.txt .
+# Зависимости — отдельным слоем: пересобираются только при смене requirements.txt.
+COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем остальной код
-COPY . .
+# Исходный код приложения.
+COPY main.py ./
+COPY core ./core
+COPY db ./db
+COPY services ./services
+COPY tg_bot ./tg_bot
 
-# Запускаем бота
-CMD ["python", "main.py"]
+# Процесс не должен работать от root: компрометация парсера не даёт прав в контейнере.
+RUN useradd --create-home --uid 10001 appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
+CMD ["python", "-u", "main.py"]

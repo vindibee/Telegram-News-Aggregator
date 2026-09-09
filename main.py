@@ -1,49 +1,128 @@
+"""Точка входа: композиционный корень приложения.
+
+Здесь и только здесь создаются «долгоживущие» объекты (бот, HTTP-сессия,
+пул соединений с БД) и связываются между собой. Все остальные модули
+получают зависимости извне и не создают их сами.
+"""
+
+from __future__ import annotations
+
 import asyncio
+import sys
+
 import aiohttp
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-from core.config import BOT_TOKEN
-from core.logger import logger
-from db.database import init_models
+from core.config import ConfigError, Settings, load_settings
+from core.logger import get_logger, setup_logging
+from db.database import Database
+from services.cooldown import CooldownStorage
+from services.media import MediaDownloader
+from services.parser import TelegramWebParser
+from tg_bot.errors import register_error_handlers
 from tg_bot.handlers import router
-from tg_bot.middlewares import DatabaseMiddleware
+from tg_bot.middlewares import DependenciesMiddleware
+from tg_bot.views import PostRenderer
+
+logger = get_logger(__name__)
+
+#: Верхняя граница одновременных TCP-соединений к t.me и CDN Telegram.
+_CONNECTION_LIMIT = 30
 
 
-async def main():
-    logger.info("Инициализация Базы Данных...")
-    await init_models()
+def build_http_session(settings: Settings) -> aiohttp.ClientSession:
+    """Создаёт общую HTTP-сессию.
 
-    # DefaultBotProperties устанавливает HTML разметку по умолчанию для всех сообщений
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    dp = Dispatcher()
-
-    # Подключаем Middleware для БД
-    dp.update.middleware(DatabaseMiddleware())
-
-    # Подключаем роутеры с хендлерами
-    dp.include_router(router)
-
-    # Инициализируем aiohttp сессию здесь, чтобы она жила пока работает бот
-    http_session = aiohttp.ClientSession(
+    Одна сессия на всё приложение — это переиспользование соединений и
+    единые таймауты; создание сессии на каждый запрос убивало бы keep-alive.
+    """
+    connector = aiohttp.TCPConnector(limit=_CONNECTION_LIMIT, ttl_dns_cache=300)
+    return aiohttp.ClientSession(
+        connector=connector,
+        timeout=aiohttp.ClientTimeout(total=settings.parser.media_timeout),
         headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0"
-        }
+            "User-Agent": settings.parser.user_agent,
+            "Accept-Language": "ru,en;q=0.9",
+        },
     )
 
-    logger.info("Бот успешно запущен и готов к работе!")
+
+def build_dispatcher(settings: Settings, database: Database, http_session: aiohttp.ClientSession) -> Dispatcher:
+    """Собирает диспетчер со всеми зависимостями, middleware и хендлерами."""
+    parser = TelegramWebParser(http_session, settings.parser)
+    downloader = MediaDownloader(http_session, settings.parser)
+
+    dispatcher = Dispatcher()
+    # Данные уровня приложения доступны хендлерам как обычные аргументы.
+    dispatcher["settings"] = settings
+    dispatcher["renderer"] = PostRenderer(downloader, settings.display_timezone)
+    dispatcher["cooldown"] = CooldownStorage(settings.parser.cooldown)
+
+    # outer_middleware срабатывает до фильтров, поэтому сессия БД доступна и им.
+    dispatcher.update.outer_middleware(
+        DependenciesMiddleware(database.session_factory, parser, settings.parser)
+    )
+
+    register_error_handlers(dispatcher)
+    dispatcher.include_router(router)
+    return dispatcher
+
+
+async def run() -> None:
+    """Поднимает приложение и корректно освобождает ресурсы при остановке."""
+    settings = load_settings()
+    setup_logging(settings.log_level)
+
+    logger.info("Инициализация приложения…")
+    database = Database(settings.db)
+    bot = Bot(
+        token=settings.bot_token,
+        default=DefaultBotProperties(
+            parse_mode=ParseMode.HTML,
+            link_preview_is_disabled=True,
+        ),
+    )
+    http_session = build_http_session(settings)
+
     try:
-        # Передаем http_session в хендлеры через kwargs диспетчера
-        await dp.start_polling(bot, http_session=http_session)
+        await database.create_all()
+        dispatcher = build_dispatcher(settings, database, http_session)
+
+        me = await bot.get_me()
+        logger.info("Бот @%s запущен и готов к работе.", me.username)
+
+        # Накопленные за простой апдейты не обрабатываем: они уже неактуальны.
+        await bot.delete_webhook(drop_pending_updates=True)
+        await dispatcher.start_polling(
+            bot,
+            allowed_updates=dispatcher.resolve_used_update_types(),
+        )
     finally:
-        logger.info("Остановка бота, закрытие сессий...")
+        logger.info("Остановка: освобождаю ресурсы…")
         await http_session.close()
         await bot.session.close()
+        await database.dispose()
+        logger.info("Приложение остановлено.")
+
+
+def main() -> int:
+    """CLI-обёртка: превращает исключения запуска в понятный код возврата."""
+    try:
+        asyncio.run(run())
+    except ConfigError as exc:
+        setup_logging("INFO")
+        logger.critical("Ошибка конфигурации: %s", exc)
+        return 2
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Бот остановлен пользователем.")
+    except Exception as exc:  # noqa: BLE001 - последний рубеж перед падением процесса
+        setup_logging("INFO")
+        logger.critical("Фатальная ошибка: %s", exc, exc_info=True)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Бот остановлен пользователем (Ctrl+C)")
+    sys.exit(main())
