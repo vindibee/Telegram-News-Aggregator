@@ -67,6 +67,34 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Воркер использует тот же образ, но запускает другой процесс: схему
+  # мигрирует бот, поэтому здесь только ожидание готовности зависимостей.
+  worker:
+    build:
+      context: ..
+      dockerfile: Docker/Dockerfile
+    container_name: news_worker
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      REDIS_URL: redis://redis:6379/0
+    command: python -u -m worker
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      bot:
+        condition: service_started
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   pgdata:
   redisdata:

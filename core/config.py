@@ -194,6 +194,22 @@ class BillingConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkerConfig:
+    """Параметры фонового воркера."""
+
+    #: За сколько часов до окончания предупреждать пользователя.
+    expiry_notice_hours: int
+    #: Как часто искать истекающие подписки, секунды.
+    expiry_check_interval: int
+    #: Как часто отзывать доступ у истёкших, секунды.
+    expiration_check_interval: int
+    #: Как часто просрочивать неоплаченные счета, секунды.
+    invoice_cleanup_interval: int
+    #: Сколько записей обрабатывать за один проход.
+    batch_size: int
+
+
+@dataclass(frozen=True, slots=True)
 class Channel:
     """Описание отслеживаемого публичного канала."""
 
@@ -213,6 +229,7 @@ class Settings:
     redis: RedisConfig
     rate_limit: RateLimitConfig
     billing: BillingConfig
+    worker: WorkerConfig
     channels: tuple[Channel, ...] = field(default_factory=tuple)
 
     def channel_by_username(self, username: str) -> Channel | None:
@@ -307,6 +324,14 @@ def load_settings() -> Settings:
         max_pending_invoices=_get_int("MAX_PENDING_INVOICES", 3, minimum=1),
     )
 
+    worker = WorkerConfig(
+        expiry_notice_hours=_get_int("WORKER_EXPIRY_NOTICE_HOURS", 24, minimum=1),
+        expiry_check_interval=_get_int("WORKER_EXPIRY_INTERVAL", 900, minimum=30),
+        expiration_check_interval=_get_int("WORKER_EXPIRATION_INTERVAL", 300, minimum=30),
+        invoice_cleanup_interval=_get_int("WORKER_INVOICE_INTERVAL", 600, minimum=30),
+        batch_size=_get_int("WORKER_BATCH_SIZE", 100, minimum=1),
+    )
+
     return Settings(
         bot_token=bot_token,
         log_level=_get_str("LOG_LEVEL", "INFO"),
@@ -316,5 +341,6 @@ def load_settings() -> Settings:
         redis=redis,
         rate_limit=rate_limit,
         billing=billing,
+        worker=worker,
         channels=CHANNELS,
     )

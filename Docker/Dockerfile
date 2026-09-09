@@ -20,6 +20,7 @@ COPY core ./core
 COPY db ./db
 COPY services ./services
 COPY tg_bot ./tg_bot
+COPY worker ./worker
 
 # Процесс не должен работать от root: компрометация парсера не даёт прав в контейнере.
 RUN useradd --create-home --uid 10001 appuser \

@@ -380,6 +380,37 @@ class SubscriptionRepository(BaseRepository[Subscription]):
         return claimed
 
     @handle_db_errors
+    async def reset_expiry_notification(self, subscription_ids: Sequence[int]) -> int:
+        """Снимает отметку об отправленном уведомлении.
+
+        Нужна воркеру для компенсации: захват помечает подписку до отправки
+        сообщения, поэтому при сбое доставки отметку необходимо вернуть —
+        иначе пользователь никогда не узнает об окончании подписки.
+
+        :param subscription_ids: Подписки, уведомление по которым не ушло.
+        :return: Сколько отметок снято.
+        """
+        if not subscription_ids:
+            return 0
+
+        stmt = (
+            update(Subscription)
+            .where(
+                Subscription.id.in_(tuple(subscription_ids)),
+                Subscription.expiry_notified_at.is_not(None),
+            )
+            .values(expiry_notified_at=None, updated_at=func.now())
+            .returning(Subscription.id)
+            .execution_options(synchronize_session=False)
+        )
+        restored = (await self._session.execute(stmt)).scalars().all()
+        if restored:
+            logger.warning(
+                "Отметка уведомления снята у %d подписок: доставка не состоялась", len(restored)
+            )
+        return len(restored)
+
+    @handle_db_errors
     async def claim_expired(self, *, now: datetime, limit: int = 100) -> Sequence[Subscription]:
         """Переводит истёкшие подписки в статус ``expired`` и возвращает их.
 
