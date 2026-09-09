@@ -37,6 +37,9 @@ _BAND_MASK: Final[int] = (1 << BAND_BITS) - 1
 #: Размер шингла в словах.
 DEFAULT_SHINGLE_SIZE: Final[int] = 3
 
+#: До скольких символов усекается вход расстояния Левенштейна.
+_LEVENSHTEIN_MAX_LENGTH: Final[int] = 512
+
 _UINT64_MASK: Final[int] = (1 << SIMHASH_BITS) - 1
 _INT64_OFFSET: Final[int] = 1 << SIMHASH_BITS
 _INT64_MAX: Final[int] = (1 << (SIMHASH_BITS - 1)) - 1
@@ -190,6 +193,120 @@ def simhash_bands(value: int) -> tuple[int, int, int, int]:
     )
     # Явная распаковка вместо среза: сигнатура обещает ровно четыре элемента.
     return bands[0], bands[1], bands[2], bands[3]
+
+
+def jaccard_similarity(left: str, right: str, size: int = DEFAULT_SHINGLE_SIZE) -> float:
+    """Считает сходство текстов по совпадению шинглов.
+
+    Мера устойчива к перестановке абзацев и вставкам: одна и та же новость,
+    пересобранная другим редактором, сохраняет большую часть словосочетаний.
+
+    :param left: Первый текст.
+    :param right: Второй текст.
+    :param size: Размер шингла в словах.
+    :return: Значение от 0.0 до 1.0.
+    """
+    left_set = set(shingles(left, size))
+    right_set = set(shingles(right, size))
+    if not left_set or not right_set:
+        return 0.0
+
+    intersection = len(left_set & right_set)
+    union = len(left_set | right_set)
+    return intersection / union if union else 0.0
+
+
+def levenshtein_distance(left: str, right: str, max_length: int = _LEVENSHTEIN_MAX_LENGTH) -> int:
+    """Расстояние Левенштейна между строками.
+
+    Алгоритм квадратичный, поэтому длина входа ограничена: на новостных
+    текстах в несколько килобайт полный расчёт стоил бы миллионы операций
+    на каждую пару, а для решения о дубликате хватает начала текста.
+
+    Память — две строки матрицы вместо полной: разница в потреблении на
+    длинных текстах принципиальна.
+
+    :param left: Первая строка.
+    :param right: Вторая строка.
+    :param max_length: До скольких символов усекать вход.
+    :return: Минимальное число правок.
+    """
+    first = left[:max_length]
+    second = right[:max_length]
+
+    if first == second:
+        return 0
+    if not first:
+        return len(second)
+    if not second:
+        return len(first)
+
+    previous = list(range(len(second) + 1))
+    for i, left_char in enumerate(first, start=1):
+        current = [i]
+        for j, right_char in enumerate(second, start=1):
+            current.append(
+                min(
+                    previous[j] + 1,          # удаление
+                    current[j - 1] + 1,       # вставка
+                    previous[j - 1] + (left_char != right_char),  # замена
+                )
+            )
+        previous = current
+    return previous[-1]
+
+
+def levenshtein_ratio(left: str, right: str) -> float:
+    """Нормализованное сходство по Левенштейну.
+
+    Применяется к коротким сообщениям, где шинглов слишком мало для
+    устойчивой оценки: у текста из пяти слов множество трёхсловных
+    сочетаний состоит из трёх элементов, и одно изменённое слово роняет
+    Jaccard почти до нуля.
+
+    :param left: Первый текст (нормализуется внутри).
+    :param right: Второй текст.
+    :return: Значение от 0.0 до 1.0.
+    """
+    first = normalize_text(left)[:_LEVENSHTEIN_MAX_LENGTH]
+    second = normalize_text(right)[:_LEVENSHTEIN_MAX_LENGTH]
+    longest = max(len(first), len(second))
+    if longest == 0:
+        return 0.0
+    return 1.0 - levenshtein_distance(first, second) / longest
+
+
+def extract_search_terms(text: str, limit: int = 8, min_length: int = 4) -> list[str]:
+    """Выбирает характерные слова текста для полнотекстового поиска.
+
+    Отбор идёт по длине слова: она служит грубым, но дешёвым признаком
+    редкости. Короткие слова в русском тексте — предлоги, союзы и общая
+    лексика, встречающаяся в каждой второй новости; по ним поиск вернул бы
+    половину таблицы.
+
+    :param text: Исходный текст.
+    :param limit: Сколько слов вернуть.
+    :param min_length: Минимальная длина слова.
+    :return: Список уникальных слов, от самых длинных к коротким.
+    """
+    if limit < 1:
+        raise ValueError(f"Количество термов должно быть не меньше 1, получено: {limit}")
+
+    seen: set[str] = set()
+    words: list[str] = []
+    for word in normalize_text(text).split():
+        if len(word) < min_length or word in seen:
+            continue
+        seen.add(word)
+        words.append(word)
+
+    words.sort(key=len, reverse=True)
+    return words[:limit]
+
+
+def word_count(text: str) -> int:
+    """Количество слов в нормализованном тексте."""
+    return len(normalize_text(text).split())
 
 
 def build_fingerprint(text: str, shingle_size: int = DEFAULT_SHINGLE_SIZE) -> TextFingerprint:

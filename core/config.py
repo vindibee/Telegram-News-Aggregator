@@ -194,6 +194,19 @@ class BillingConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class DedupConfigValues:
+    """Параметры дедупликации новостей (сырые значения из окружения)."""
+
+    enabled: bool
+    hamming_threshold: int
+    similarity_threshold: float
+    short_text_threshold: float
+    short_text_words: int
+    lookback_hours: int
+    candidate_limit: int
+
+
+@dataclass(frozen=True, slots=True)
 class WorkerConfig:
     """Параметры фонового воркера."""
 
@@ -230,6 +243,7 @@ class Settings:
     rate_limit: RateLimitConfig
     billing: BillingConfig
     worker: WorkerConfig
+    dedup: DedupConfigValues
     channels: tuple[Channel, ...] = field(default_factory=tuple)
 
     def channel_by_username(self, username: str) -> Channel | None:
@@ -332,6 +346,18 @@ def load_settings() -> Settings:
         batch_size=_get_int("WORKER_BATCH_SIZE", 100, minimum=1),
     )
 
+    dedup = DedupConfigValues(
+        enabled=_get_bool("DEDUP_ENABLED", True),
+        # Фильтр с высокой полнотой: настоящие перепечатки дают 0..8,
+        # разные новости — 23..31. Решение принимает мера сходства ниже.
+        hamming_threshold=_get_int("DEDUP_HAMMING_THRESHOLD", 16, minimum=0),
+        similarity_threshold=_get_float("DEDUP_SIMILARITY_THRESHOLD", 0.75, minimum=0.01),
+        short_text_threshold=_get_float("DEDUP_SHORT_TEXT_THRESHOLD", 0.9, minimum=0.01),
+        short_text_words=_get_int("DEDUP_SHORT_TEXT_WORDS", 12, minimum=1),
+        lookback_hours=_get_int("DEDUP_LOOKBACK_HOURS", 48, minimum=1),
+        candidate_limit=_get_int("DEDUP_CANDIDATE_LIMIT", 200, minimum=1),
+    )
+
     return Settings(
         bot_token=bot_token,
         log_level=_get_str("LOG_LEVEL", "INFO"),
@@ -342,5 +368,6 @@ def load_settings() -> Settings:
         rate_limit=rate_limit,
         billing=billing,
         worker=worker,
+        dedup=dedup,
         channels=CHANNELS,
     )

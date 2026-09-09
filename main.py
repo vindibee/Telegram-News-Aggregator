@@ -22,6 +22,7 @@ from core.config import ConfigError, Settings, load_settings
 from core.logger import get_logger, setup_logging
 from db.database import Database
 from db.uow import UnitOfWorkFactory
+from services.dedup import DedupConfig
 from services.media import MediaDownloader
 from services.parser import TelegramWebParser
 from services.ratelimit.base import RateLimitBackend
@@ -56,6 +57,20 @@ def build_http_session(settings: Settings) -> aiohttp.ClientSession:
             "User-Agent": settings.parser.user_agent,
             "Accept-Language": "ru,en;q=0.9",
         },
+    )
+
+
+def build_dedup_config(settings: Settings) -> DedupConfig:
+    """Переносит настройки дедупликации из окружения в параметры сервиса."""
+    values = settings.dedup
+    return DedupConfig(
+        enabled=values.enabled,
+        hamming_threshold=values.hamming_threshold,
+        similarity_threshold=values.similarity_threshold,
+        short_text_threshold=values.short_text_threshold,
+        short_text_words=values.short_text_words,
+        lookback_hours=values.lookback_hours,
+        candidate_limit=values.candidate_limit,
     )
 
 
@@ -101,6 +116,7 @@ def build_dispatcher(
             parser,
             settings.parser,
             invoice_ttl=timedelta(minutes=settings.billing.invoice_ttl_minutes),
+            dedup_config=build_dedup_config(settings),
         )
     )
     # Строго после зависимостей: регистрация пользователя работает в уже

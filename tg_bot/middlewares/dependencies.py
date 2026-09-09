@@ -13,6 +13,7 @@ from core.config import ParserConfig
 from core.logger import get_logger
 from db.uow import UnitOfWorkFactory
 from services.billing import BillingService
+from services.dedup import DedupConfig
 from services.news_service import NewsService
 from services.parser import TelegramWebParser
 
@@ -38,11 +39,13 @@ class DependenciesMiddleware(BaseMiddleware):
         parser: TelegramWebParser,
         parser_config: ParserConfig,
         invoice_ttl: timedelta,
+        dedup_config: DedupConfig,
     ) -> None:
         self._uow_factory = uow_factory
         self._parser = parser
         self._parser_config = parser_config
         self._invoice_ttl = invoice_ttl
+        self._dedup_config = dedup_config
 
     async def __call__(
         self,
@@ -52,7 +55,7 @@ class DependenciesMiddleware(BaseMiddleware):
     ) -> Any:
         async with self._uow_factory() as uow:
             data["uow"] = uow
-            data["service"] = NewsService(uow, self._parser, self._parser_config)
+            data["service"] = NewsService(uow, self._parser, self._parser_config, self._dedup_config)
             data["billing"] = BillingService(uow, invoice_ttl=self._invoice_ttl)
             result = await handler(event, data)
             await uow.commit()

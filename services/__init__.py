@@ -1,6 +1,13 @@
 """Прикладной слой: парсинг, загрузка медиа и сценарии работы с новостями."""
 
-from services.fingerprint import TextFingerprint, build_fingerprint, hamming_distance
+from services.dedup import DedupConfig, DeduplicationService, MatchMethod
+from services.fingerprint import (
+    TextFingerprint,
+    build_fingerprint,
+    hamming_distance,
+    jaccard_similarity,
+    levenshtein_ratio,
+)
 from services.ratelimit import (
     AntiFloodPolicy,
     FallbackRateLimiter,
@@ -25,6 +32,9 @@ __all__ = [
     "FallbackRateLimiter",
     "InMemoryRateLimiter",
     "DownloadedMedia",
+    "DedupConfig",
+    "DeduplicationService",
+    "MatchMethod",
     "TextFingerprint",
     "MediaDownloader",
     "MediaItem",
@@ -38,4 +48,6 @@ __all__ = [
     "TelegramWebParser",
     "build_fingerprint",
     "hamming_distance",
+    "jaccard_similarity",
+    "levenshtein_ratio",
 ]
