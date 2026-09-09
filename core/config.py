@@ -65,6 +65,21 @@ def _get_float(key: str, default: float, *, minimum: float = 0.0) -> float:
     return value
 
 
+def _get_int_tuple(key: str, default: tuple[int, ...], *, minimum: int = 1) -> tuple[int, ...]:
+    raw = os.getenv(key)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        values = tuple(int(part) for part in raw.split(",") if part.strip())
+    except ValueError as exc:
+        raise ConfigError(
+            f"Переменная окружения {key} должна быть списком целых через запятую, получено: {raw!r}"
+        ) from exc
+    if not values or any(value < minimum for value in values):
+        raise ConfigError(f"Значения {key} должны быть не меньше {minimum}, получено: {raw!r}")
+    return values
+
+
 def _get_timezone(key: str, default: str = "UTC") -> tzinfo:
     name = os.getenv(key, default).strip() or default
     # UTC берём из stdlib напрямую: он доступен даже там, где нет базы tzdata.
@@ -131,6 +146,44 @@ class ParserConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RedisConfig:
+    """Параметры подключения к Redis."""
+
+    url: str
+    prefix: str
+
+    @property
+    def enabled(self) -> bool:
+        """Настроен ли Redis.
+
+        Без него бот работает на локальных хранилищах: это допустимо для
+        одного экземпляра, но не для нескольких реплик.
+        """
+        return bool(self.url)
+
+
+@dataclass(frozen=True, slots=True)
+class RateLimitConfig:
+    """Параметры ограничения частоты и анти-флуда."""
+
+    enabled: bool
+    message_limit: int
+    message_window: float
+    message_burst: int
+    callback_limit: int
+    callback_window: float
+    callback_burst: int
+    refresh_limit: int
+    refresh_window: float
+    single_flight_ttl: float
+    violations_before_mute: int
+    violation_window: float
+    warn_cooldown: float
+    mute_durations: tuple[int, ...]
+    mute_level_ttl: float
+
+
+@dataclass(frozen=True, slots=True)
 class Channel:
     """Описание отслеживаемого публичного канала."""
 
@@ -147,6 +200,8 @@ class Settings:
     display_timezone: tzinfo
     db: DatabaseConfig
     parser: ParserConfig
+    redis: RedisConfig
+    rate_limit: RateLimitConfig
     channels: tuple[Channel, ...] = field(default_factory=tuple)
 
     def channel_by_username(self, username: str) -> Channel | None:
@@ -211,11 +266,38 @@ def load_settings() -> Settings:
         user_agent=_get_str("USER_AGENT", _DEFAULT_USER_AGENT),
     )
 
+    redis = RedisConfig(
+        url=_get_str("REDIS_URL", ""),
+        prefix=_get_str("REDIS_PREFIX", "newsbot"),
+    )
+
+    rate_limit = RateLimitConfig(
+        enabled=_get_bool("RATE_LIMIT_ENABLED", True),
+        # Человек физически не отправляет больше ~20 сообщений в минуту.
+        message_limit=_get_int("RL_MESSAGE_LIMIT", 20, minimum=1),
+        message_window=_get_float("RL_MESSAGE_WINDOW", 60.0, minimum=1.0),
+        message_burst=_get_int("RL_MESSAGE_BURST", 5, minimum=1),
+        # Кнопки нажимают чаще, чем пишут, поэтому лимит выше.
+        callback_limit=_get_int("RL_CALLBACK_LIMIT", 30, minimum=1),
+        callback_window=_get_float("RL_CALLBACK_WINDOW", 60.0, minimum=1.0),
+        callback_burst=_get_int("RL_CALLBACK_BURST", 8, minimum=1),
+        refresh_limit=_get_int("RL_REFRESH_LIMIT", 1, minimum=1),
+        refresh_window=_get_float("RL_REFRESH_WINDOW", float(_get_int("PARSE_COOLDOWN", 60)), minimum=1.0),
+        single_flight_ttl=_get_float("RL_SINGLE_FLIGHT_TTL", 10.0, minimum=0.5),
+        violations_before_mute=_get_int("RL_VIOLATIONS_BEFORE_MUTE", 5, minimum=1),
+        violation_window=_get_float("RL_VIOLATION_WINDOW", 60.0, minimum=1.0),
+        warn_cooldown=_get_float("RL_WARN_COOLDOWN", 10.0, minimum=1.0),
+        mute_durations=_get_int_tuple("RL_MUTE_DURATIONS", (30, 120, 600)),
+        mute_level_ttl=_get_float("RL_MUTE_LEVEL_TTL", 3600.0, minimum=60.0),
+    )
+
     return Settings(
         bot_token=bot_token,
         log_level=_get_str("LOG_LEVEL", "INFO"),
         display_timezone=_get_timezone("DISPLAY_TZ", "UTC"),
         db=database,
         parser=parser,
+        redis=redis,
+        rate_limit=rate_limit,
         channels=CHANNELS,
     )

@@ -20,6 +20,25 @@ services:
       retries: 10
       start_period: 10s
 
+  redis:
+    image: redis:7-alpine
+    container_name: news_redis
+    restart: unless-stopped
+    # Ограничения частоты и состояния FSM переживают перезапуск, но не
+    # являются критичными данными, поэтому персистентность минимальна.
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   bot:
     build:
       # Контекст — корень проекта, иначе COPY не увидит исходники.
@@ -33,10 +52,14 @@ services:
       # Внутри compose-сети хост БД — имя сервиса, независимо от значения в .env.
       DB_HOST: db
       DB_PORT: 5432
+      # Внутри compose-сети адрес Redis фиксирован именем сервиса.
+      REDIS_URL: redis://redis:6379/0
     # Схема приводится к актуальной версии до старта поллинга.
     command: sh -c "alembic upgrade head && exec python -u main.py"
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     logging:
       driver: json-file
@@ -46,3 +69,4 @@ services:
 
 volumes:
   pgdata:
+  redisdata:

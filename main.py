@@ -14,16 +14,20 @@ import aiohttp
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.fsm.storage.base import BaseStorage
+from aiogram.fsm.storage.memory import MemoryStorage
 
 from core.config import ConfigError, Settings, load_settings
 from core.logger import get_logger, setup_logging
 from db.database import Database
-from services.cooldown import CooldownStorage
+from db.uow import UnitOfWorkFactory
 from services.media import MediaDownloader
 from services.parser import TelegramWebParser
+from services.ratelimit.base import RateLimitBackend
+from services.ratelimit.factory import build_backend, build_policy, build_rules
 from tg_bot.errors import register_error_handlers
 from tg_bot.handlers import router
-from tg_bot.middlewares import DependenciesMiddleware
+from tg_bot.middlewares import DependenciesMiddleware, SingleFlightMiddleware, ThrottlingMiddleware
 from tg_bot.views import PostRenderer
 
 logger = get_logger(__name__)
@@ -49,21 +53,58 @@ def build_http_session(settings: Settings) -> aiohttp.ClientSession:
     )
 
 
-def build_dispatcher(settings: Settings, database: Database, http_session: aiohttp.ClientSession) -> Dispatcher:
+def build_fsm_storage(settings: Settings) -> BaseStorage:
+    """Создаёт хранилище состояний FSM.
+
+    В памяти состояние теряется при перезапуске и не разделяется между
+    репликами, поэтому в продакшене используется Redis.
+    """
+    if not settings.redis.enabled:
+        logger.warning("REDIS_URL не задан: состояния FSM хранятся в памяти процесса.")
+        return MemoryStorage()
+
+    from aiogram.fsm.storage.redis import RedisStorage
+
+    logger.info("Состояния FSM хранятся в Redis.")
+    return RedisStorage.from_url(settings.redis.url)
+
+
+def build_dispatcher(
+    settings: Settings,
+    database: Database,
+    http_session: aiohttp.ClientSession,
+    limiter: RateLimitBackend,
+    storage: BaseStorage,
+) -> Dispatcher:
     """Собирает диспетчер со всеми зависимостями, middleware и хендлерами."""
     parser = TelegramWebParser(http_session, settings.parser)
     downloader = MediaDownloader(http_session, settings.parser)
+    rules = build_rules(settings.rate_limit)
+    policy = build_policy(limiter, settings.rate_limit)
 
-    dispatcher = Dispatcher()
+    dispatcher = Dispatcher(storage=storage)
     # Данные уровня приложения доступны хендлерам как обычные аргументы.
     dispatcher["settings"] = settings
     dispatcher["renderer"] = PostRenderer(downloader, settings.display_timezone)
-    dispatcher["cooldown"] = CooldownStorage(settings.parser.cooldown)
+    dispatcher["limiter"] = limiter
 
     # outer_middleware срабатывает до фильтров, поэтому сессия БД доступна и им.
     dispatcher.update.outer_middleware(
-        DependenciesMiddleware(database.session_factory, parser, settings.parser)
+        DependenciesMiddleware(UnitOfWorkFactory(database.session_factory), parser, settings.parser)
     )
+
+    if settings.rate_limit.enabled:
+        # Внутренние middleware наблюдателей: только здесь известен выбранный
+        # хендлер, а значит и его флаги с индивидуальным лимитом.
+        dispatcher.message.middleware(ThrottlingMiddleware(policy, rules.message))
+        dispatcher.callback_query.middleware(ThrottlingMiddleware(policy, rules.callback))
+        # Защита от двойных нажатий ставится после троттлинга: блокировку
+        # имеет смысл брать только для запроса, который реально исполнится.
+        dispatcher.callback_query.middleware(
+            SingleFlightMiddleware(limiter, ttl=settings.rate_limit.single_flight_ttl)
+        )
+    else:
+        logger.warning("Ограничение частоты отключено настройкой RATE_LIMIT_ENABLED.")
 
     register_error_handlers(dispatcher)
     dispatcher.include_router(router)
@@ -85,10 +126,14 @@ async def run() -> None:
         ),
     )
     http_session = build_http_session(settings)
+    limiter = build_backend(settings.redis)
+    storage = build_fsm_storage(settings)
 
     try:
-        await database.create_all()
-        dispatcher = build_dispatcher(settings, database, http_session)
+        # Схема БД разворачивается миграциями Alembic ("alembic upgrade head"),
+        # а не приложением: приложение, меняющее схему на старте, ломает
+        # деплой при нескольких репликах и не даёт откатиться.
+        dispatcher = build_dispatcher(settings, database, http_session, limiter, storage)
 
         me = await bot.get_me()
         logger.info("Бот @%s запущен и готов к работе.", me.username)
@@ -103,6 +148,8 @@ async def run() -> None:
         logger.info("Остановка: освобождаю ресурсы…")
         await http_session.close()
         await bot.session.close()
+        await limiter.close()
+        await storage.close()
         await database.dispose()
         logger.info("Приложение остановлено.")
 

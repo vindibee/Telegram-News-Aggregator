@@ -1,7 +1,13 @@
 """Прикладной слой: парсинг, загрузка медиа и сценарии работы с новостями."""
 
-from services.cooldown import CooldownStorage
 from services.fingerprint import TextFingerprint, build_fingerprint, hamming_distance
+from services.ratelimit import (
+    AntiFloodPolicy,
+    FallbackRateLimiter,
+    InMemoryRateLimiter,
+    RateLimiter,
+    RateLimitRule,
+)
 from services.media import DownloadedMedia, MediaDownloader
 from services.news_service import NewsService, RefreshResult
 from services.parser import (
@@ -15,8 +21,11 @@ from services.parser import (
 
 __all__ = [
     "ChannelUnavailableError",
-    "CooldownStorage",
+    "AntiFloodPolicy",
+    "FallbackRateLimiter",
+    "InMemoryRateLimiter",
     "DownloadedMedia",
+    "TextFingerprint",
     "MediaDownloader",
     "MediaItem",
     "NetworkError",
@@ -24,8 +33,9 @@ __all__ = [
     "ParsedPost",
     "ParserError",
     "RefreshResult",
+    "RateLimitRule",
+    "RateLimiter",
     "TelegramWebParser",
-    "TextFingerprint",
     "build_fingerprint",
     "hamming_distance",
 ]
