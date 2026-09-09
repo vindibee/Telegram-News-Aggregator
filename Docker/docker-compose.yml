@@ -33,6 +33,8 @@ services:
       # Внутри compose-сети хост БД — имя сервиса, независимо от значения в .env.
       DB_HOST: db
       DB_PORT: 5432
+    # Схема приводится к актуальной версии до старта поллинга.
+    command: sh -c "alembic upgrade head && exec python -u main.py"
     depends_on:
       db:
         condition: service_healthy

@@ -14,7 +14,8 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Исходный код приложения.
-COPY main.py ./
+COPY main.py alembic.ini ./
+COPY migrations ./migrations
 COPY core ./core
 COPY db ./db
 COPY services ./services

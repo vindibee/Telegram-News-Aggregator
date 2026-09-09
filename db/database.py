@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from core.config import DatabaseConfig
 from core.logger import get_logger
 from db.base import Base
-from db.models import NewsPost  # noqa: F401  — регистрация модели в metadata
+import db.models  # noqa: F401  — регистрирует все модели в Base.metadata
 
 logger = get_logger(__name__)
 

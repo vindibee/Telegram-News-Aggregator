@@ -20,7 +20,7 @@ from aiogram.types import (
 
 from core.config import MAX_CAPTION_LENGTH, MAX_MEDIA_GROUP_SIZE
 from core.logger import get_logger
-from db.models import NewsPost
+from db.models import Post
 from services.media import DownloadedMedia, MediaDownloader
 from services.parser import MediaItem
 from tg_bot.keyboards import kb_back
@@ -45,7 +45,7 @@ class PostRenderer:
         self._downloader = downloader
         self._display_tz = display_tz
 
-    async def render(self, message: Message, post: NewsPost) -> None:
+    async def render(self, message: Message, post: Post) -> None:
         """Показывает пост в чате.
 
         Исходное сообщение превращается в заголовок карточки, тело поста
@@ -81,12 +81,12 @@ class PostRenderer:
 
         await message.answer(_BACK_PROMPT, reply_markup=kb_back(post.channel_name))
 
-    def _header(self, post: NewsPost) -> str:
+    def _header(self, post: Post) -> str:
         stamp = post.post_time.astimezone(self._display_tz).strftime("%d.%m.%Y %H:%M")
         return f"📍 Пост от <b>{escape(stamp)}</b> | @{escape(post.channel_name)}"
 
     @staticmethod
-    def _media_items(post: NewsPost) -> list[MediaItem]:
+    def _media_items(post: Post) -> list[MediaItem]:
         """Восстанавливает медиа из JSONB, отбрасывая повреждённые записи."""
         raw: Any = post.media_urls or []
         if not isinstance(raw, list):

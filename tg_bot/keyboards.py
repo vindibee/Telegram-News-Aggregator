@@ -9,7 +9,7 @@ from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.config import MAX_BUTTON_TEXT_LENGTH, Channel
-from db.models import NewsPost
+from db.models import Post
 from tg_bot.callbacks import ACTION_CHANNELS, ChannelCB, MenuCB, PostCB, RefreshCB
 from tg_bot.utils import shorten
 
@@ -27,7 +27,7 @@ def kb_channels(channels: Sequence[Channel]) -> InlineKeyboardMarkup:
 
 
 def kb_posts(
-    posts: Sequence[NewsPost],
+    posts: Sequence[Post],
     username: str,
     display_tz: tzinfo,
 ) -> InlineKeyboardMarkup:
