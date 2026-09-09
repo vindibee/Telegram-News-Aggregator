@@ -210,6 +210,7 @@ class SubscriptionRepository(BaseRepository[Subscription]):
         days: int,
         plan: SubscriptionPlan | None = None,
         payload: dict[str, Any] | None = None,
+        extend: bool = True,
     ) -> GrantResult:
         """Начисляет дни по платежу ровно один раз.
 
@@ -230,6 +231,10 @@ class SubscriptionRepository(BaseRepository[Subscription]):
         :param days: Количество начисляемых суток (положительное).
         :param plan: Новый тариф, если оплата меняет план.
         :param payload: Произвольные данные для аудита.
+        :param extend: Продлевать ли подписку. ``False`` нужен, когда
+            подписка только что создана уже с оплаченным периодом: событие
+            записать необходимо (иначе повторная доставка вебхука продлит
+            срок), а продлевать нечего.
         :return: Результат с признаком применения.
         :raises ValueError: Некорректное число суток.
         """
@@ -257,6 +262,14 @@ class SubscriptionRepository(BaseRepository[Subscription]):
             )
             subscription = await self.get(subscription_id)
             return GrantResult(applied=False, subscription=subscription)
+
+        if not extend:
+            logger.info(
+                "Платёж id=%s зафиксирован без продления: период уже включён в подписку id=%s",
+                payment_id, subscription_id,
+            )
+            subscription = await self.get(subscription_id)
+            return GrantResult(applied=True, subscription=subscription, event_id=event_id)
 
         values: dict[str, Any] = {
             # make_interval(years, months, weeks, days) — позиционная форма.

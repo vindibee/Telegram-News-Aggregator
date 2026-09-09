@@ -26,7 +26,7 @@ from tg_bot.views import PostRenderer
 
 logger = get_logger(__name__)
 
-router = Router(name="main")
+router = Router(name="news")
 
 _GREETING = (
     "👋 <b>Агрегатор новостей Telegram</b>\n\n"

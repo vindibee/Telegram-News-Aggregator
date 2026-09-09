@@ -9,8 +9,18 @@ from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.config import MAX_BUTTON_TEXT_LENGTH, Channel
+from core.pricing import PlanOption
 from db.models import Post
-from tg_bot.callbacks import ACTION_CHANNELS, ChannelCB, MenuCB, PostCB, RefreshCB
+from tg_bot.callbacks import (
+    ACTION_CHANNELS,
+    ACTION_PLANS,
+    ACTION_SUBSCRIPTION,
+    ChannelCB,
+    MenuCB,
+    PlanCB,
+    PostCB,
+    RefreshCB,
+)
 from tg_bot.utils import shorten
 
 
@@ -58,4 +68,42 @@ def kb_to_channels() -> InlineKeyboardMarkup:
     """Клавиатура из одной кнопки возврата в главное меню (экраны ошибок)."""
     builder = InlineKeyboardBuilder()
     builder.button(text="◀️ К каналам", callback_data=MenuCB(action=ACTION_CHANNELS))
+    return builder.as_markup()
+
+
+def kb_plans(options: Sequence[PlanOption]) -> InlineKeyboardMarkup:
+    """Клавиатура выбора тарифа.
+
+    Цена выносится в текст кнопки: пользователь видит сумму до открытия
+    счёта, а не после.
+    """
+    builder = InlineKeyboardBuilder()
+    for option in options:
+        builder.button(
+            text=f"{option.title} — {option.stars} ⭐",
+            callback_data=PlanCB(option_id=option.id),
+        )
+    builder.button(text="◀️ Назад", callback_data=MenuCB(action=ACTION_CHANNELS))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def kb_subscription(has_subscription: bool) -> InlineKeyboardMarkup:
+    """Клавиатура экрана подписки."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="⭐ Продлить" if has_subscription else "⭐ Оформить подписку",
+        callback_data=MenuCB(action=ACTION_PLANS),
+    )
+    builder.button(text="📡 К каналам", callback_data=MenuCB(action=ACTION_CHANNELS))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def kb_after_payment() -> InlineKeyboardMarkup:
+    """Клавиатура после успешной оплаты."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📡 К каналам", callback_data=MenuCB(action=ACTION_CHANNELS))
+    builder.button(text="💳 Моя подписка", callback_data=MenuCB(action=ACTION_SUBSCRIPTION))
+    builder.adjust(1)
     return builder.as_markup()

@@ -184,6 +184,16 @@ class RateLimitConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class BillingConfig:
+    """Параметры оплаты."""
+
+    #: Сколько минут действует выставленный счёт.
+    invoice_ttl_minutes: int
+    #: Сколько неоплаченных счетов пользователь может держать одновременно.
+    max_pending_invoices: int
+
+
+@dataclass(frozen=True, slots=True)
 class Channel:
     """Описание отслеживаемого публичного канала."""
 
@@ -202,6 +212,7 @@ class Settings:
     parser: ParserConfig
     redis: RedisConfig
     rate_limit: RateLimitConfig
+    billing: BillingConfig
     channels: tuple[Channel, ...] = field(default_factory=tuple)
 
     def channel_by_username(self, username: str) -> Channel | None:
@@ -291,6 +302,11 @@ def load_settings() -> Settings:
         mute_level_ttl=_get_float("RL_MUTE_LEVEL_TTL", 3600.0, minimum=60.0),
     )
 
+    billing = BillingConfig(
+        invoice_ttl_minutes=_get_int("INVOICE_TTL_MINUTES", 15, minimum=1),
+        max_pending_invoices=_get_int("MAX_PENDING_INVOICES", 3, minimum=1),
+    )
+
     return Settings(
         bot_token=bot_token,
         log_level=_get_str("LOG_LEVEL", "INFO"),
@@ -299,5 +315,6 @@ def load_settings() -> Settings:
         parser=parser,
         redis=redis,
         rate_limit=rate_limit,
+        billing=billing,
         channels=CHANNELS,
     )

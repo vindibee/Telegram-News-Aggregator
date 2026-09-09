@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import timedelta
 
 import aiohttp
 from aiogram import Bot, Dispatcher
@@ -27,7 +28,12 @@ from services.ratelimit.base import RateLimitBackend
 from services.ratelimit.factory import build_backend, build_policy, build_rules
 from tg_bot.errors import register_error_handlers
 from tg_bot.handlers import router
-from tg_bot.middlewares import DependenciesMiddleware, SingleFlightMiddleware, ThrottlingMiddleware
+from tg_bot.middlewares import (
+    DependenciesMiddleware,
+    SingleFlightMiddleware,
+    ThrottlingMiddleware,
+    UserContextMiddleware,
+)
 from tg_bot.views import PostRenderer
 
 logger = get_logger(__name__)
@@ -90,8 +96,16 @@ def build_dispatcher(
 
     # outer_middleware срабатывает до фильтров, поэтому сессия БД доступна и им.
     dispatcher.update.outer_middleware(
-        DependenciesMiddleware(UnitOfWorkFactory(database.session_factory), parser, settings.parser)
+        DependenciesMiddleware(
+            UnitOfWorkFactory(database.session_factory),
+            parser,
+            settings.parser,
+            invoice_ttl=timedelta(minutes=settings.billing.invoice_ttl_minutes),
+        )
     )
+    # Строго после зависимостей: регистрация пользователя работает в уже
+    # открытой транзакции.
+    dispatcher.update.outer_middleware(UserContextMiddleware())
 
     if settings.rate_limit.enabled:
         # Внутренние middleware наблюдателей: только здесь известен выбранный

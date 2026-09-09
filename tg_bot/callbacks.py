@@ -33,5 +33,17 @@ class PostCB(CallbackData, prefix="post"):
     id: int
 
 
+class PlanCB(CallbackData, prefix="plan"):
+    """Выставить счёт на выбранный тариф."""
+
+    option_id: str
+
+
 #: Действие «вернуться к списку каналов».
 ACTION_CHANNELS = "channels"
+
+#: Действие «показать тарифы».
+ACTION_PLANS = "plans"
+
+#: Действие «показать состояние подписки».
+ACTION_SUBSCRIPTION = "subscription"
