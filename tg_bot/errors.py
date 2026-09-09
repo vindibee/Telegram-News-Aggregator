@@ -8,7 +8,7 @@ from aiogram.filters import ExceptionTypeFilter
 from aiogram.types import CallbackQuery, ErrorEvent, Message
 
 from core.logger import get_logger
-from db.repo import RepositoryError
+from db.repositories import RepositoryError
 from services.parser import ParserError
 from tg_bot.keyboards import kb_to_channels
 
