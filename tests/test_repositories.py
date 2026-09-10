@@ -385,3 +385,180 @@ async def test_repository_access_outside_context_is_rejected(uow_factory) -> Non
 
     with pytest.raises(RuntimeError):
         _ = unit.users
+
+
+# --------------------------------------------------------------------------- #
+# Платежи: ограничения уникальности
+# --------------------------------------------------------------------------- #
+
+
+async def _new_invoice(uow, user: User, **overrides):
+    """Создаёт счёт с уникальными по умолчанию идентификаторами."""
+    from decimal import Decimal
+
+    from db.enums import PaymentProvider, SubscriptionPlan
+    from db.models import Payment
+
+    invoice_id = overrides.pop("invoice_id", Payment.generate_invoice_id())
+    params = {
+        "user_id": user.id,
+        "provider": PaymentProvider.TELEGRAM_STARS,
+        "invoice_id": invoice_id,
+        "idempotency_key": overrides.pop("idempotency_key", f"key:{invoice_id}"),
+        "amount": Decimal(150),
+        "currency": "XTR",
+        "plan": SubscriptionPlan.PRO,
+        "period_days": 30,
+    }
+    params.update(overrides)
+    return await uow.payments.create_invoice(**params)
+
+
+async def test_create_invoice_stores_new_payment(uow, user: User) -> None:
+    result = await _new_invoice(uow, user)
+
+    assert result.created, "Первый вызов должен создавать счёт"
+    assert result.payment.id is not None
+
+
+async def test_create_invoice_with_same_key_returns_existing(uow, user: User) -> None:
+    # Ключ идемпотентности — точка принятия решения: вставка идёт с
+    # ON CONFLICT DO NOTHING, а не «сначала SELECT, потом INSERT», иначе
+    # два одновременных запроса создали бы два счёта.
+    first = await _new_invoice(uow, user, idempotency_key="fixed-key")
+    second = await _new_invoice(uow, user, idempotency_key="fixed-key")
+
+    assert first.created and not second.created
+    assert first.payment.id == second.payment.id, (
+        "Повтор по тому же ключу обязан вернуть тот же счёт"
+    )
+
+
+async def test_duplicate_invoice_id_for_one_provider_is_rejected(uow, user: User) -> None:
+    # invoice_id уходит в Telegram как invoice_payload и возвращается
+    # обратно в событии оплаты. Два счёта с одним payload сделали бы
+    # невозможным определить, какой из них оплачен.
+    from db.repositories.errors import ConflictError
+
+    await _new_invoice(uow, user, invoice_id="inv_duplicate")
+
+    with pytest.raises(ConflictError):
+        await _new_invoice(
+            uow, user, invoice_id="inv_duplicate", idempotency_key="another-key"
+        )
+
+
+async def test_same_invoice_id_is_allowed_for_another_provider(uow, user: User) -> None:
+    # Уникальность составная — «провайдер + счёт»: пространства
+    # идентификаторов у звёзд и CryptoBot независимы.
+    from db.enums import PaymentProvider
+
+    await _new_invoice(uow, user, invoice_id="inv_shared")
+    result = await _new_invoice(
+        uow,
+        user,
+        invoice_id="inv_shared",
+        idempotency_key="crypto-key",
+        provider=PaymentProvider.CRYPTO_BOT,
+    )
+
+    assert result.created, "Тот же идентификатор у другого провайдера — не конфликт"
+
+
+async def test_duplicate_external_id_is_rejected(uow, user: User) -> None:
+    # Транзакция провайдера не может относиться к двум счетам сразу:
+    # иначе одну оплату можно было бы зачесть дважды.
+    from datetime import datetime, timezone
+
+    from db.enums import PaymentProvider
+    from db.repositories.errors import ConflictError
+
+    first = await _new_invoice(uow, user)
+    second = await _new_invoice(uow, user)
+    now = datetime.now(tz=timezone.utc)
+
+    await uow.payments.confirm_payment(
+        provider=PaymentProvider.TELEGRAM_STARS,
+        invoice_id=first.payment.invoice_id,
+        external_id="charge_shared",
+        paid_at=now,
+    )
+
+    with pytest.raises(ConflictError):
+        await uow.payments.confirm_payment(
+            provider=PaymentProvider.TELEGRAM_STARS,
+            invoice_id=second.payment.invoice_id,
+            external_id="charge_shared",
+            paid_at=now,
+        )
+
+
+async def test_create_invoice_rejects_non_positive_amount(uow, user: User) -> None:
+    from decimal import Decimal
+
+    with pytest.raises(ValueError):
+        await _new_invoice(uow, user, amount=Decimal(0))
+
+
+async def test_create_invoice_rejects_non_positive_period(uow, user: User) -> None:
+    with pytest.raises(ValueError):
+        await _new_invoice(uow, user, period_days=0)
+
+
+async def test_confirm_unknown_invoice_reports_absence(uow) -> None:
+    from datetime import datetime, timezone
+
+    from db.enums import PaymentProvider
+
+    payment, changed = await uow.payments.confirm_payment(
+        provider=PaymentProvider.TELEGRAM_STARS,
+        invoice_id="inv_nonexistent",
+        external_id="charge_x",
+        paid_at=datetime.now(tz=timezone.utc),
+    )
+
+    assert payment is None and not changed
+
+
+async def test_confirm_twice_reports_no_second_change(uow, user: User) -> None:
+    # Повторная доставка события оплаты — штатная ситуация: второй вызов
+    # обязан вернуть changed=False, а не поднять ошибку.
+    from datetime import datetime, timezone
+
+    from db.enums import PaymentProvider
+
+    invoice = await _new_invoice(uow, user)
+    now = datetime.now(tz=timezone.utc)
+
+    _, first_changed = await uow.payments.confirm_payment(
+        provider=PaymentProvider.TELEGRAM_STARS,
+        invoice_id=invoice.payment.invoice_id,
+        external_id="charge_once",
+        paid_at=now,
+    )
+    payment, second_changed = await uow.payments.confirm_payment(
+        provider=PaymentProvider.TELEGRAM_STARS,
+        invoice_id=invoice.payment.invoice_id,
+        external_id="charge_once",
+        paid_at=now,
+    )
+
+    assert first_changed, "Первое подтверждение меняет статус"
+    assert not second_changed, "Второе подтверждение статус уже не меняет"
+    assert payment is not None and payment.external_id == "charge_once"
+
+
+async def test_get_by_invoice_id_is_scoped_to_provider(uow, user: User) -> None:
+    from db.enums import PaymentProvider
+
+    invoice = await _new_invoice(uow, user, invoice_id="inv_scoped")
+
+    found = await uow.payments.get_by_invoice_id(
+        PaymentProvider.TELEGRAM_STARS, "inv_scoped"
+    )
+    missing = await uow.payments.get_by_invoice_id(
+        PaymentProvider.CRYPTO_BOT, "inv_scoped"
+    )
+
+    assert found is not None and found.id == invoice.payment.id
+    assert missing is None, "Поиск обязан учитывать провайдера"

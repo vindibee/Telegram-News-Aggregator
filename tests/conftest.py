@@ -83,6 +83,7 @@ from sqlalchemy.pool import NullPool
 from core.config import Settings, load_settings
 from db.base import Base
 from db.enums import (
+    ChannelKind,
     PaymentProvider,
     PaymentStatus,
     PostStatus,
@@ -90,7 +91,7 @@ from db.enums import (
     SubscriptionSource,
     SubscriptionStatus,
 )
-from db.models import Payment, Post, Subscription, User
+from db.models import Payment, Post, Subscription, User, UserChannel
 from db.uow import UnitOfWork, UnitOfWorkFactory
 from services.billing import BillingService
 from services.dedup import DedupConfig
@@ -451,6 +452,19 @@ def build_payment(user_id: int, **overrides: Any) -> Payment:
     return Payment(**defaults)
 
 
+def build_channel(user_id: int, **overrides: Any) -> UserChannel:
+    """Собирает подключённый канал, не сохраняя его."""
+    defaults: dict[str, Any] = {
+        "user_id": user_id,
+        "kind": ChannelKind.SOURCE,
+        "username": DEFAULT_CHANNEL,
+        "title": "Тестовый канал",
+        "is_active": True,
+    }
+    defaults.update(overrides)
+    return UserChannel(**defaults)
+
+
 def build_post(**overrides: Any) -> Post:
     """Собирает новость, не сохраняя её.
 
@@ -510,6 +524,30 @@ def make_payment(db_session: AsyncSession) -> Factory:
         db_session.add(payment)
         await db_session.commit()
         return payment
+
+    return _make
+
+
+@pytest.fixture
+def make_channel(db_session: AsyncSession) -> Factory:
+    """Создаёт подключённый канал в базе.
+
+    Целевому каналу обязателен ``chat_id``: без него публиковать некуда, и
+    это проверяет ограничение в самой БД. Поэтому для
+    ``ChannelKind.TARGET`` он подставляется автоматически — иначе каждый
+    тест повторял бы одно и то же.
+    """
+    counter = iter(range(1, 10_000))
+
+    async def _make(user: User, **overrides: Any) -> UserChannel:
+        index = next(counter)
+        overrides.setdefault("username", f"channel_{index}")
+        if overrides.get("kind") is ChannelKind.TARGET:
+            overrides.setdefault("chat_id", -100_000_000_000 - index)
+        channel = build_channel(user.id, **overrides)
+        db_session.add(channel)
+        await db_session.commit()
+        return channel
 
     return _make
 
