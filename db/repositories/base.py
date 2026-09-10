@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from functools import wraps
 from typing import Any, ClassVar, Generic, ParamSpec, TypeVar
 
-from sqlalchemy import ColumnElement, Select, func, select
+from sqlalchemy import ColumnElement, Select, UnaryExpression, func, select, update as sql_update
 from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -136,7 +136,7 @@ class BaseRepository(Generic[ModelT]):
         return self._session
 
     @handle_db_errors
-    async def get(self, entity_id: Any) -> ModelT | None:
+    async def get_by_id(self, entity_id: Any) -> ModelT | None:
         """Возвращает запись по первичному ключу или ``None``."""
         return await self._session.get(self.model, entity_id)
 
@@ -175,6 +175,70 @@ class BaseRepository(Generic[ModelT]):
         )
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
+
+    @handle_db_errors
+    async def get_all(
+        self,
+        *conditions: ColumnElement[bool],
+        order_by: UnaryExpression[Any] | ColumnElement[Any] | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> Sequence[ModelT]:
+        """Возвращает записи, удовлетворяющие условиям.
+
+        Метод намеренно принимает ``limit``: выборка «всё подряд» из
+        таблицы, которая растёт, — самый простой способ однажды получить
+        отказ по памяти. Наследники, которым нужен полный список,
+        передают ``limit=None`` осознанно.
+
+        :param conditions: Условия фильтрации.
+        :param order_by: Порядок сортировки.
+        :param limit: Максимальное число записей.
+        :param offset: Сколько записей пропустить.
+        :return: Список сущностей.
+        """
+        stmt: Select[tuple[ModelT]] = select(self.model)
+        if conditions:
+            stmt = stmt.where(*conditions)
+        if order_by is not None:
+            stmt = stmt.order_by(order_by)
+        if offset is not None:
+            stmt = stmt.offset(offset)
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        return (await self._session.execute(stmt)).scalars().all()
+
+    @handle_db_errors
+    async def update(self, entity_id: Any, /, **values: Any) -> ModelT | None:
+        """Обновляет поля записи одним запросом и возвращает результат.
+
+        ``UPDATE ... RETURNING`` вместо связки «загрузить объект, изменить
+        атрибуты, сохранить»: последняя стоит двух обращений к базе и
+        оставляет между ними окно, в котором строку успевает изменить
+        соседняя транзакция. Там, где нужно именно «прочитать — изменить —
+        записать», берите :meth:`get_for_update`.
+
+        :param entity_id: Первичный ключ.
+        :param values: Изменяемые поля.
+        :return: Обновлённая запись либо ``None``, если её нет.
+        :raises ValueError: Не передано ни одного поля.
+        """
+        if not values:
+            raise ValueError("Обновление без полей не имеет смысла.")
+
+        stmt = (
+            sql_update(self.model)
+            .where(self.model.id == entity_id)
+            .values(**values)
+            .returning(self.model)
+            # Объект мог быть загружен раньше в этой же сессии: без явного
+            # указания он остался бы с прежними значениями атрибутов.
+            .execution_options(synchronize_session="fetch")
+        )
+        entity = (await self._session.execute(stmt)).scalar_one_or_none()
+        if entity is None:
+            logger.info("Обновление %s id=%s не затронуло ни одной строки", self.model.__name__, entity_id)
+        return entity
 
     @handle_db_errors
     async def add(self, entity: ModelT) -> ModelT:

@@ -62,7 +62,7 @@ class ExpiryNotificationTask(PeriodicTask):
                 now=now, horizon=self._horizon, limit=self._batch_size
             )
             recipients = [
-                (subscription, await uow.users.get(subscription.user_id))
+                (subscription, await uow.users.get_by_id(subscription.user_id))
                 for subscription in claimed
             ]
             # Фиксируем захват сразу: пока сообщения уходят, соседняя реплика
@@ -162,7 +162,7 @@ class SubscriptionExpirationTask(PeriodicTask):
         async with self._uow_factory() as uow:
             expired = await uow.subscriptions.claim_expired(now=now, limit=self._batch_size)
             recipients = [
-                (subscription, await uow.users.get(subscription.user_id))
+                (subscription, await uow.users.get_by_id(subscription.user_id))
                 for subscription in expired
             ]
             await uow.commit()

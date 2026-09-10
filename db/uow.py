@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from core.logger import get_logger
 from db.locks import LockNamespace, acquire_xact_lock, try_acquire_xact_lock
 from db.repositories.base import DEFAULT_RETRY_ATTEMPTS, run_with_retry
+from db.repositories.channel import ChannelRepository
 from db.repositories.payment import PaymentRepository
 from db.repositories.post import PostRepository
 from db.repositories.subscription import SubscriptionRepository
@@ -55,6 +56,7 @@ class UnitOfWork:
         self._subscriptions: SubscriptionRepository | None = None
         self._payments: PaymentRepository | None = None
         self._posts: PostRepository | None = None
+        self._channels: ChannelRepository | None = None
 
     # ------------------------------------------------------------- контекст
     async def __aenter__(self) -> Self:
@@ -64,6 +66,7 @@ class UnitOfWork:
         self._subscriptions = SubscriptionRepository(self._session)
         self._payments = PaymentRepository(self._session)
         self._posts = PostRepository(self._session)
+        self._channels = ChannelRepository(self._session)
         return self
 
     async def __aexit__(
@@ -93,6 +96,7 @@ class UnitOfWork:
             self._subscriptions = None
             self._payments = None
             self._posts = None
+            self._channels = None
 
     @staticmethod
     def _has_pending_changes(session: AsyncSession) -> bool:
@@ -137,6 +141,13 @@ class UnitOfWork:
         self._require_session()
         assert self._posts is not None  # noqa: S101
         return self._posts
+
+    @property
+    def channels(self) -> ChannelRepository:
+        """Репозиторий каналов пользователя."""
+        self._require_session()
+        assert self._channels is not None  # noqa: S101
+        return self._channels
 
     # ------------------------------------------------------------ управление
     async def commit(self) -> None:

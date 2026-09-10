@@ -1,6 +1,7 @@
 """Репозиторный слой: единственное место, где приложение говорит на SQL."""
 
 from db.repositories.base import BaseRepository, handle_db_errors, run_with_retry
+from db.repositories.channel import ChannelCreateResult, ChannelRepository
 from db.repositories.errors import (
     ConcurrencyError,
     ConflictError,
@@ -18,6 +19,8 @@ from db.repositories.user import TrialClaimResult, UserRepository, UserUpsertRes
 
 __all__ = [
     "BaseRepository",
+    "ChannelCreateResult",
+    "ChannelRepository",
     "ConcurrencyError",
     "ConflictError",
     "EntityNotFoundError",

@@ -74,7 +74,7 @@ async def test_activate_marks_user_and_reserves_phone_fingerprint(
 
     # Сервис работает с копией пользователя из собственной транзакции —
     # проверяем её, а не экземпляр из сессии подготовки данных.
-    actor = await uow.users.get(user.id)
+    actor = await uow.users.get_by_id(user.id)
     assert actor is not None and actor.trial_activated_at == FROZEN_NOW, (
         "Отметка об активации не проставлена"
     )
@@ -171,7 +171,7 @@ async def test_rejected_by_fingerprint_leaves_second_account_without_trial_mark(
     with pytest.raises(TrialFingerprintTakenError):
         await trial.activate(multi_account, phone=PHONE, now=FROZEN_NOW)
 
-    rejected = await uow.users.get(multi_account.id)
+    rejected = await uow.users.get_by_id(multi_account.id)
     assert rejected is not None and rejected.trial_activated_at is None, (
         "Отказ по чужому номеру не должен сжигать право на триал"
     )
@@ -204,7 +204,7 @@ async def test_parallel_activations_of_one_user_grant_single_subscription(
     async def attempt() -> str:
         async with uow_factory() as unit:
             service = TrialService(unit, settings.trial)
-            fresh = await unit.users.get(user_id)
+            fresh = await unit.users.get_by_id(user_id)
             assert fresh is not None
             try:
                 await service.activate(fresh, phone=PHONE, now=FROZEN_NOW)

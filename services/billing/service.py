@@ -190,7 +190,7 @@ class BillingService:
             logger.warning("PreCheckout по неизвестному счёту %r от %s", payload, telegram_id)
             return PreCheckoutDecision(ok=False, error_key="billing.precheckout.not_found")
 
-        user = await self._uow.users.get(payment.user_id)
+        user = await self._uow.users.get_by_id(payment.user_id)
         if user is None or user.telegram_id != telegram_id:
             logger.error(
                 "PreCheckout: счёт id=%s принадлежит другому пользователю (ожидался %s)",

@@ -56,7 +56,7 @@ class NewsService:
 
     async def get_post(self, post_id: int) -> Post | None:
         """Запись по идентификатору."""
-        return await self._uow.posts.get(post_id)
+        return await self._uow.posts.get_by_id(post_id)
 
     async def refresh(self, channel: str) -> RefreshResult:
         """Парсит канал, сохраняет новые записи и отсеивает повторы.

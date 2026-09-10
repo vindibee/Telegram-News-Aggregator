@@ -9,10 +9,12 @@ from typing import Any, ClassVar, Final
 
 from sqlalchemy import func, literal_column, select, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import selectinload
 
 from core.logger import get_logger
 from db.enums import Language, TrialFingerprintKind
-from db.models import TrialClaim, User
+from db.enums import LIVE_SUBSCRIPTION_STATUSES
+from db.models import Subscription, TrialClaim, User
 from db.repositories.base import BaseRepository, handle_db_errors
 from db.repositories.errors import ConflictError, RepositoryError
 
@@ -71,6 +73,79 @@ class UserRepository(BaseRepository[User]):
             .execution_options(populate_existing=True)
         )
         return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    @handle_db_errors
+    async def get_with_subscription(self, telegram_id: int) -> User | None:
+        """Возвращает пользователя вместе с действующей подпиской.
+
+        Связи объявлены с ``lazy="raise"``, поэтому обратиться к
+        ``user.subscriptions`` после выхода из сессии нельзя — и это
+        правильно: неявная подгрузка в асинхронном коде оборачивается
+        либо лишним запросом на каждое обращение, либо падением вне
+        контекста сессии. Здесь связь загружается явно.
+
+        ``selectinload`` вместо ``joinedload``: отдельный запрос по
+        списку идентификаторов не размножает строки пользователя по
+        числу его подписок, а значит не заставляет базу и драйвер
+        гонять один и тот же профиль несколько раз.
+
+        Загружаются только действующие подписки: история продлений
+        нужна отдельному экрану, а не каждому апдейту.
+
+        :param telegram_id: Идентификатор пользователя в Telegram.
+        :return: Пользователь с заполненным ``subscriptions`` либо ``None``.
+        """
+        stmt = (
+            select(User)
+            .where(User.telegram_id == telegram_id)
+            .options(
+                selectinload(
+                    User.subscriptions.and_(
+                        Subscription.status.in_(LIVE_SUBSCRIPTION_STATUSES)
+                    )
+                )
+            )
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    @handle_db_errors
+    async def set_referrer(self, user_id: int, referrer_id: int) -> bool:
+        """Проставляет пригласившего, если он ещё не назначен.
+
+        Условие ``referred_by_id IS NULL`` — часть запроса, а не
+        проверка в коде: иначе два одновременных перехода по разным
+        реферальным ссылкам могли бы переписать «родителя» друг у
+        друга. Сменить пригласившего задним числом нельзя вовсе —
+        на этом держится честность реферальной программы.
+
+        Начисление бонуса здесь не выполняется: его жизненный цикл
+        живёт в таблице ``referrals`` и принадлежит сервисному слою.
+
+        :param user_id: Приглашённый пользователь.
+        :param referrer_id: Пригласивший пользователь.
+        :return: ``True``, если связь установлена этим вызовом.
+        :raises ValueError: Попытка назначить пользователя самому себе.
+        """
+        if user_id == referrer_id:
+            raise ValueError(
+                f"Пользователь {user_id} не может пригласить сам себя."
+            )
+
+        stmt = (
+            update(User)
+            .where(User.id == user_id, User.referred_by_id.is_(None))
+            .values(referred_by_id=referrer_id, updated_at=func.now())
+        )
+        result = await self._session.execute(stmt)
+        linked = bool(result.rowcount)
+
+        if linked:
+            logger.info("Пользователь id=%s привязан к рефереру id=%s", user_id, referrer_id)
+        else:
+            logger.info(
+                "Реферер пользователя id=%s уже назначен, связь не изменена", user_id
+            )
+        return linked
 
     @handle_db_errors
     async def get_by_referral_code(self, code: str) -> User | None:
