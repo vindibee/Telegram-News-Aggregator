@@ -7,6 +7,7 @@ from tg_bot.handlers.billing import router as billing_router
 from tg_bot.handlers.cabinet import router as cabinet_router
 from tg_bot.handlers.language import router as language_router
 from tg_bot.handlers.news import router as news_router
+from tg_bot.handlers.onboarding import router as onboarding_router
 from tg_bot.handlers.promo import router as promo_router
 from tg_bot.handlers.search import router as search_router
 from tg_bot.handlers.stats import router as stats_router
@@ -24,6 +25,9 @@ router = Router(name="root")
 # из сценария, оставив висеть клавиатуру запроса номера.
 # Роутер языка стоит перед остальными: его состояние FSM ловит
 # произвольный ввод, а смена языка должна работать из любого экрана.
+# Знакомство идёт первым: его экраны — вход в бота, и они не должны
+# перекрываться ничем другим.
+router.include_router(onboarding_router)
 router.include_router(language_router)
 # Кабинет тоже ловит свободный ввод, но только внутри своих
 # состояний, поэтому стоит рядом с остальными FSM-сценариями.

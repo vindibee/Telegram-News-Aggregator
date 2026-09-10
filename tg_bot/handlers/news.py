@@ -24,6 +24,7 @@ from services.ratelimit.base import RateLimiter, RateLimitRule
 from db.uow import UnitOfWork
 from tg_bot.callbacks import ACTION_CHANNELS, ChannelCB, MenuCB, PostCB, RefreshCB
 from tg_bot.flags import no_single_flight, rate_limit
+from tg_bot.handlers.onboarding import show_start
 from tg_bot.handlers.promo import notify_referrer
 from tg_bot.keyboards import kb_channels, kb_posts, kb_to_channels
 from tg_bot.utils import get_message, safe_edit_text
@@ -45,24 +46,23 @@ async def cmd_start(
     settings: Settings,
     i18n: Translator,
 ) -> None:
-    """Приветствие, список каналов и разбор реферальной ссылки.
+    """Первый экран знакомства и разбор реферальной ссылки.
 
     Реферальная нагрузка обрабатывается здесь, а не отдельной
     командой: у Telegram один вход по ссылке — ``/start`` с
     полезной нагрузкой, и другого места для неё просто нет.
 
-    Приветствие показывается в любом случае, даже если код оказался
-    чужим или уже использованным: человек пришёл пользоваться
-    ботом, а не разбираться в чужой реферальной ссылке.
+    Дальше человек попадает не в список каналов, а на первый шаг
+    знакомства: канал — одна из возможностей бота, а не сам
+    продукт, и начинать с него значило бы показывать инструмент
+    раньше, чем объяснено, зачем он нужен.
     """
     code = parse_referral_payload(command.args)
     if code is not None:
         await _apply_referral(message, bot, code, user=user, uow=uow,
                               settings=settings, i18n=i18n)
 
-    await message.answer(
-        i18n("start.greeting"), reply_markup=kb_channels(settings.channels, i18n)
-    )
+    await show_start(message, i18n)
 
 
 async def _apply_referral(
@@ -97,12 +97,6 @@ async def _apply_referral(
         await notify_referrer(
             bot, referrer=result.referrer, days=result.days, i18n=i18n
         )
-
-
-@router.message(Command("help"))
-async def cmd_help(message: Message, i18n: Translator) -> None:
-    """Краткая справка по боту."""
-    await message.answer(i18n("help.text"), reply_markup=kb_to_channels(i18n))
 
 
 @router.callback_query(MenuCB.filter(F.action == ACTION_CHANNELS), **no_single_flight())

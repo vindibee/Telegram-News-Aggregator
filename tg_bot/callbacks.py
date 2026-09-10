@@ -95,11 +95,35 @@ class BroadcastCB(CallbackData, prefix="bc"):
     audience: str = ""
 
 
+class HelpCB(CallbackData, prefix="hlp"):
+    """Открыть объяснение одной функции."""
+
+    topic: str
+
+
 class LanguageCB(CallbackData, prefix="lang"):
     """Выбрать язык интерфейса."""
 
     code: str
 
+
+#: Действие «начать» — первый шаг знакомства с ботом.
+ACTION_START = "begin"
+
+#: Действие «открыть главное меню».
+ACTION_MENU = "menu"
+
+#: Действие «рассказать, что умеет бот».
+ACTION_ABOUT = "about"
+
+#: Действие «открыть справку по функциям».
+ACTION_HELP = "help"
+
+#: Действие «показать список команд».
+ACTION_COMMANDS = "cmds"
+
+#: Действие «показать статистику ссылок».
+ACTION_STATS = "stats"
 
 #: Действие «вернуться к списку каналов».
 ACTION_CHANNELS = "channels"

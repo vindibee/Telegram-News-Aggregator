@@ -24,8 +24,9 @@ from db.models import User
 from db.uow import UnitOfWork
 from services.i18n import LanguageCache, Translator
 from tg_bot.callbacks import ACTION_LANGUAGE, LanguageCB, MenuCB
+from tg_bot.handlers.onboarding import show_about
 from tg_bot.flags import rate_limit
-from tg_bot.keyboards import kb_channels, kb_languages
+from tg_bot.keyboards import kb_languages
 from tg_bot.states import LanguageStates
 from tg_bot.utils import get_message, safe_edit_text
 
@@ -96,11 +97,11 @@ async def choose_language(
     if target is None:
         return
 
-    await safe_edit_text(
-        target,
-        localized("language.changed"),
-        kb_channels(settings.channels, localized),
-    )
+    # Сразу после выбора языка человек должен увидеть, зачем ему
+    # этот бот, — уже на выбранном языке. Отправлять его в список
+    # каналов на этом шаге значило бы показать инструмент раньше,
+    # чем объяснено, что он делает.
+    await show_about(target, localized, edit=True)
 
 
 @router.message(LanguageStates.choosing, Command("cancel"))

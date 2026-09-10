@@ -37,7 +37,17 @@
     "prev_page": "◀️ Back",
     "next_page": "Next ▶️",
     "promo": "🎟 Promo code",
-    "referral": "👥 Invite a friend"
+    "referral": "👥 Invite a friend",
+    "start_now": "🚀 Start",
+    "menu": "🏠 Main menu",
+    "about": "🎯 What the bot does",
+    "help": "❓ How to use",
+    "commands": "⌨️ Commands",
+    "feed": "📰 News feed",
+    "stats": "📊 Link analytics",
+    "plans": "⭐ Plans",
+    "trial_short": "🎁 Free trial",
+    "help_back": "◀️ Back to features"
   },
   "units": {
     "days": {
@@ -69,7 +79,46 @@
     "greeting": "👋 <b>Telegram News Aggregator</b>\n\nPick a channel — I will show its latest posts and store them."
   },
   "help": {
-    "text": "ℹ️ <b>How to use</b>\n\n/start — channel list\n/language — interface language\n/premium — plans\n/subscription — subscription status\n/trial — free trial\n/help — this message\n\nThe «🔄 Refresh» button in the post list pulls fresh posts from the channel."
+    "hub": "❓ <b>How to use</b>\n\nPick a feature — I will explain what it does, why it is useful and how to work with it.",
+    "commands": "⌨️ <b>Commands</b>\n\n/start — start over\n/menu — main menu\n/help — this guide\n/language — change language\n/trial — free trial\n/premium — plans\n/subscription — subscription status\n/ref — invite a friend\n/promo — redeem a promo code\n/search — search the archive\n/stats — link analytics",
+    "topics": {
+      "feed": {
+        "title": "📰 News feed",
+        "body": "📰 <b>News feed</b>\n\n<b>What it is.</b> Fresh posts from curated channels in a single list — no switching between chats.\n\n<b>How to use.</b> Open the section, pick a channel and browse the posts. «🔄 Refresh» pulls the latest straight from the channel.\n\n<b>Why.</b> Reading ten channels in a row is tiring. Here everything sits in one place, and whatever you read is kept in the archive and stays searchable."
+      },
+      "cabinet": {
+        "title": "⚙️ Your sources",
+        "body": "⚙️ <b>Your sources</b>\n\n<b>What it is.</b> The channels the bot watches specifically for you.\n\n<b>How to use.</b> Workspace → «📥 My sources» → «➕ Add source», then send a link or @name. The bot checks right away that the channel exists and is readable.\n\n<b>Why.</b> The public channel list is shared by everyone; sources are yours — they feed your filters and auto-posting."
+      },
+      "autopost": {
+        "title": "📤 Auto-posting",
+        "body": "📤 <b>Auto-posting</b>\n\n<b>What it is.</b> The bot publishes selected posts to your channel by itself.\n\n<b>How to use.</b> Add the bot as an administrator with posting rights, then Workspace → «📤 Auto-posting channels» → «➕ Add channel» and forward any message from it. The bot verifies its rights and tells you whether everything is ready.\n\n<b>Why.</b> Running a channel stops being a daily chore: set the rules once and posts go out on their own.\n\n⚠️ Requires an active subscription — publishing stops when it expires."
+      },
+      "keywords": {
+        "title": "🔤 Word filters",
+        "body": "🔤 <b>Word filters</b>\n\n<b>What it is.</b> Two lists: trigger words and stop words.\n\n<b>How to use.</b> Workspace → «🔤 Word filters». Triggers: a post is taken only if it contains at least one of them. Stop words: a post is dropped even if a trigger matched. Enter the words one per line.\n\n<b>Why.</b> Without filters everything lands in your feed. With them only what you actually need survives, while ads and reposts are filtered out."
+      },
+      "search": {
+        "title": "🔎 Archive search",
+        "body": "🔎 <b>Archive search</b>\n\n<b>What it is.</b> Full-text search across every saved post.\n\n<b>How to use.</b> Use /search or the menu button, then type your words. Word forms do not matter: «news» and «newest» match the same root. Wrap an exact phrase in quotes.\n\n<b>Why.</b> That post you saw a week ago turns up in a second — no scrolling through channel history."
+      },
+      "stats": {
+        "title": "📊 Link analytics",
+        "body": "📊 <b>Link analytics</b>\n\n<b>What it is.</b> A count of clicks on links in your posts.\n\n<b>How to use.</b> Nothing to configure: external links are replaced with short ones when publishing, and clicks are counted. Run /stats for the report.\n\n<b>Why.</b> You can see which topics people actually read rather than scroll past."
+      },
+      "subscription": {
+        "title": "💳 Subscription and trial",
+        "body": "💳 <b>Subscription and free trial</b>\n\n<b>What it is.</b> The paid features — auto-posting, advanced filters and higher limits.\n\n<b>How to use.</b> Start with the «🎁 Free trial» — it costs nothing and includes everything. Then «⭐ Plans»: pay with Telegram Stars or crypto. Check the current state with /subscription.\n\n<b>Why.</b> Reading news and searching are always free. A subscription is for people running their own channel."
+      },
+      "referral": {
+        "title": "👥 Invitations",
+        "body": "👥 <b>Invitations</b>\n\n<b>What it is.</b> A personal link for inviting people you know.\n\n<b>How to use.</b> Run /ref or tap the menu button, copy the link and send it to a friend. The moment they start the bot through it, both of you get bonus days.\n\n<b>Why.</b> It extends your subscription without paying for it."
+      },
+      "promo": {
+        "title": "🎟 Promo codes",
+        "body": "🎟 <b>Promo codes</b>\n\n<b>What it is.</b> A code worth bonus subscription days.\n\n<b>How to use.</b> Run /promo and send the code in one message. Case and dashes do not matter: <code>summer-24</code> and <code>SUMMER24</code> are the same code.\n\n<b>Why.</b> Codes are handed out at launches, in promotions and by support. Each code works once per person."
+      }
+    }
   },
   "channels": {
     "choose": "📡 Pick a channel:",
@@ -262,5 +311,14 @@
   },
   "security": {
     "in_progress": "⏳ This action is already running — give it a couple of seconds."
+  },
+  "onboarding": {
+    "start": "👋 <b>Агрегатор новостей и SMM-помощник</b>\n👋 <b>News aggregator &amp; SMM assistant</b>\n\nНажмите кнопку ниже, чтобы начать.\nPress the button below to begin.",
+    "choose_language": "🌐 First, choose your interface language:",
+    "about": "🎯 <b>What this bot does</b>\n\nIt watches the Telegram channels you care about, picks out only what matters, and — if you ask — publishes the selection to your own channel.\n\n<b>Why it helps.</b> Instead of scrolling through dozens of channels and copying posts by hand, you set up sources and keyword filters once, and the bot takes it from there.\n\n<b>Main features:</b>\n\n📰 <b>News feed</b> — fresh posts from channels in one place\n⚙️ <b>Workspace</b> — your own sources, auto-posting and word filters\n🔎 <b>Search</b> — find any archived post by keywords\n📊 <b>Analytics</b> — how many people followed your links\n🎁 <b>Free trial</b> — try everything at no cost\n\nEvery feature has a detailed explanation — see «❓ How to use» in the menu.",
+    "ready": "All set! Opening the menu."
+  },
+  "menu": {
+    "title": "🏠 <b>Main menu</b>\n\nPick a section. Not sure where to start? Tap «❓ How to use»."
   }
 }

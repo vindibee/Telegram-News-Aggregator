@@ -26,8 +26,14 @@ from db.enums import KeywordKind, Language
 from db.models import Post, UserChannel
 from services.i18n import Translator
 from tg_bot.callbacks import (
+    ACTION_COMMANDS,
+    ACTION_HELP,
+    ACTION_MENU,
     ACTION_PROMO,
     ACTION_REFERRAL,
+    ACTION_START,
+    ACTION_STATS,
+    HelpCB,
     ACTION_CABINET,
     ACTION_CHANNELS,
     ACTION_LANGUAGE,
@@ -59,6 +65,94 @@ from tg_bot.callbacks import (
     RefreshCB,
 )
 from tg_bot.utils import shorten
+
+
+def kb_start(i18n: Translator) -> InlineKeyboardMarkup:
+    """Первый экран: одна кнопка, чтобы начать.
+
+    Кнопка одна намеренно. Человек, впервые открывший бота, ещё ничего о
+    нём не знает, и выбор из десяти разделов на этом шаге — не помощь, а
+    препятствие.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.button(text=i18n("buttons.start_now"), callback_data=MenuCB(action=ACTION_START))
+    return builder.as_markup()
+
+
+def kb_main_menu(i18n: Translator) -> InlineKeyboardMarkup:
+    """Главное меню: функции бота, а не список каналов.
+
+    Порядок отражает путь новичка: сначала то, что работает сразу и
+    бесплатно, затем настройка под себя, и лишь потом платные разделы.
+    Справка стоит последней, но отдельной строкой — её должно быть видно.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.button(text=i18n("buttons.feed"), callback_data=MenuCB(action=ACTION_CHANNELS))
+    builder.button(text=i18n("buttons.cabinet"), callback_data=MenuCB(action=ACTION_CABINET))
+    builder.button(text=i18n("buttons.search"), callback_data=MenuCB(action=ACTION_SEARCH))
+    builder.button(text=i18n("buttons.trial_short"), callback_data=MenuCB(action=ACTION_TRIAL))
+    builder.button(text=i18n("buttons.plans"), callback_data=MenuCB(action=ACTION_PLANS))
+    builder.button(text=i18n("buttons.referral"), callback_data=MenuCB(action=ACTION_REFERRAL))
+    builder.button(text=i18n("buttons.promo"), callback_data=MenuCB(action=ACTION_PROMO))
+    builder.button(text=i18n("buttons.stats"), callback_data=MenuCB(action=ACTION_STATS))
+    builder.button(text=i18n("buttons.language"), callback_data=MenuCB(action=ACTION_LANGUAGE))
+    builder.button(text=i18n("buttons.help"), callback_data=MenuCB(action=ACTION_HELP))
+    builder.adjust(1, 2, 2, 2, 2, 1)
+    return builder.as_markup()
+
+
+def kb_about(i18n: Translator) -> InlineKeyboardMarkup:
+    """Экран знакомства: перейти в меню или сразу открыть справку."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text=i18n("buttons.menu"), callback_data=MenuCB(action=ACTION_MENU))
+    builder.button(text=i18n("buttons.help"), callback_data=MenuCB(action=ACTION_HELP))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def kb_help_hub(topics: Sequence[str], i18n: Translator) -> InlineKeyboardMarkup:
+    """Список функций, о которых можно почитать.
+
+    :param topics: Ключи разделов справки в порядке показа.
+    :param i18n: Локализатор.
+    """
+    builder = InlineKeyboardBuilder()
+    for topic in topics:
+        builder.button(
+            text=i18n(f"help.topics.{topic}.title"), callback_data=HelpCB(topic=topic)
+        )
+    builder.button(text=i18n("buttons.commands"), callback_data=MenuCB(action=ACTION_COMMANDS))
+    builder.button(text=i18n("buttons.menu"), callback_data=MenuCB(action=ACTION_MENU))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def kb_help_topic(i18n: Translator) -> InlineKeyboardMarkup:
+    """Возврат из объяснения функции к списку и в меню."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text=i18n("buttons.help_back"), callback_data=MenuCB(action=ACTION_HELP))
+    builder.button(text=i18n("buttons.menu"), callback_data=MenuCB(action=ACTION_MENU))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def kb_to_menu(i18n: Translator) -> InlineKeyboardMarkup:
+    """Одна кнопка возврата в главное меню."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text=i18n("buttons.menu"), callback_data=MenuCB(action=ACTION_MENU))
+    return builder.as_markup()
+
+
+def kb_choose_language_first(i18n: Translator) -> InlineKeyboardMarkup:
+    """Выбор языка на первом шаге — без кнопки «назад».
+
+    Возвращаться отсюда некуда: язык нужен, чтобы показать следующий экран.
+    """
+    builder = InlineKeyboardBuilder()
+    for code, key in (("ru", "language_ru"), ("en", "language_en"), ("uk", "language_uk")):
+        builder.button(text=i18n(f"buttons.{key}"), callback_data=LanguageCB(code=code))
+    builder.adjust(1)
+    return builder.as_markup()
 
 
 def kb_channels(channels: Sequence[Channel], i18n: Translator) -> InlineKeyboardMarkup:

@@ -6,8 +6,8 @@ from html import escape
 from urllib.parse import urlparse
 
 from aiogram.filters import Command
-from aiogram import Router
-from aiogram.types import Message
+from aiogram import F, Router
+from aiogram.types import CallbackQuery, Message
 
 from core.config import Settings
 from core.logger import get_logger
@@ -15,8 +15,10 @@ from db.models import User
 from db.uow import UnitOfWork
 from services.i18n import Translator
 from services.tracker import AnalyticsReport, AnalyticsService
+from tg_bot.callbacks import ACTION_STATS, MenuCB
 from tg_bot.flags import rate_limit
-from tg_bot.keyboards import kb_to_channels
+from tg_bot.keyboards import kb_to_menu
+from tg_bot.utils import get_message
 
 logger = get_logger(__name__)
 
@@ -42,7 +44,33 @@ async def cmd_stats(
     report = await AnalyticsService(uow.links).build_report(user.id)
     await message.answer(
         _render(report, i18n),
-        reply_markup=kb_to_channels(i18n),
+        reply_markup=kb_to_menu(i18n),
+        disable_web_page_preview=True,
+    )
+
+
+@router.callback_query(MenuCB.filter(F.action == ACTION_STATS))
+async def show_stats(
+    callback: CallbackQuery,
+    user: User,
+    uow: UnitOfWork,
+    settings: Settings,
+    i18n: Translator,
+) -> None:
+    """Тот же отчёт по кнопке из главного меню."""
+    await callback.answer()
+    target = get_message(callback)
+    if target is None:
+        return
+
+    if not settings.tracker.enabled:
+        await target.answer(i18n("stats.disabled"), reply_markup=kb_to_menu(i18n))
+        return
+
+    report = await AnalyticsService(uow.links).build_report(user.id)
+    await target.answer(
+        _render(report, i18n),
+        reply_markup=kb_to_menu(i18n),
         disable_web_page_preview=True,
     )
 
