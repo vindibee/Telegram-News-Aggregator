@@ -23,13 +23,12 @@ from core.logger import get_logger
 from db.models import Post
 from services.media import DownloadedMedia, MediaDownloader
 from services.parser import MediaItem
+from services.i18n import Translator
 from tg_bot.keyboards import kb_back
 from tg_bot.utils import safe_edit_text, split_text, with_flood_retry
 
 logger = get_logger(__name__)
 
-_EMPTY_TEXT: Final[str] = "🖼 Пост без текста."
-_MEDIA_FAILED: Final[str] = "⚠️ Медиафайлы недоступны, показываю только текст."
 _BACK_PROMPT: Final[str] = "Что дальше?"
 
 _MEDIA_CLASSES: Final[dict[str, type[InputMediaPhoto] | type[InputMediaVideo]]] = {
@@ -45,7 +44,7 @@ class PostRenderer:
         self._downloader = downloader
         self._display_tz = display_tz
 
-    async def render(self, message: Message, post: Post) -> None:
+    async def render(self, message: Message, post: Post, i18n: Translator) -> None:
         """Показывает пост в чате.
 
         Исходное сообщение превращается в заголовок карточки, тело поста
@@ -57,15 +56,15 @@ class PostRenderer:
         text = (post.content or "").strip()
 
         if not media_items:
-            await self._send_text(message, text or _EMPTY_TEXT)
-            await message.answer(_BACK_PROMPT, reply_markup=kb_back(post.channel_name))
+            await self._send_text(message, text or i18n("post.empty"), i18n)
+            await message.answer(_BACK_PROMPT, reply_markup=kb_back(post.channel_name, i18n))
             return
 
         downloaded = await self._downloader.download_many(media_items)
         if not downloaded:
-            await message.answer(_MEDIA_FAILED)
-            await self._send_text(message, text or _EMPTY_TEXT)
-            await message.answer(_BACK_PROMPT, reply_markup=kb_back(post.channel_name))
+            await message.answer(i18n("post.media_failed"))
+            await self._send_text(message, text or i18n("post.empty"), i18n)
+            await message.answer(_BACK_PROMPT, reply_markup=kb_back(post.channel_name, i18n))
             return
 
         # Подпись помещается в медиа, только если укладывается в лимит Bot API;
@@ -74,12 +73,12 @@ class PostRenderer:
         sent = await self._send_media(message, downloaded, caption)
 
         if not sent:
-            await message.answer(_MEDIA_FAILED)
-            await self._send_text(message, text or _EMPTY_TEXT)
+            await message.answer(i18n("post.media_failed"))
+            await self._send_text(message, text or i18n("post.empty"), i18n)
         elif caption is None and text:
             await self._send_text(message, text)
 
-        await message.answer(_BACK_PROMPT, reply_markup=kb_back(post.channel_name))
+        await message.answer(_BACK_PROMPT, reply_markup=kb_back(post.channel_name, i18n))
 
     def _header(self, post: Post) -> str:
         stamp = post.post_time.astimezone(self._display_tz).strftime("%d.%m.%Y %H:%M")
@@ -111,7 +110,7 @@ class PostRenderer:
         и любая попытка разметить его как HTML ломается на «<» или обрезанной
         HTML-сущности.
         """
-        for chunk in split_text(text) or [_EMPTY_TEXT]:
+        for chunk in split_text(text) or [i18n("post.empty")]:
             await with_flood_retry(lambda body=chunk: message.answer(body, parse_mode=None))
 
     async def _send_media(

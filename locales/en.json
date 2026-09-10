@@ -1,0 +1,139 @@
+{
+  "common": {
+    "error": "⚠️ Internal error. Please try again later.",
+    "busy": "⌛ This request is already being processed.",
+    "stale": "This message is outdated, send /start."
+  },
+  "buttons": {
+    "channels": "📡 Channels",
+    "home": "🏠 Channels",
+    "back": "◀️ Back",
+    "back_to_channels": "◀️ Back to channels",
+    "back_to_posts": "◀️ Back to posts",
+    "refresh": "🔄 Refresh",
+    "my_subscription": "💳 My subscription",
+    "buy": "⭐ Subscribe",
+    "extend": "⭐ Extend",
+    "trial": "🎁 Free trial for {days}",
+    "share_phone": "📱 Share phone number",
+    "language": "🌐 Language",
+    "language_ru": "🇷🇺 Русский",
+    "language_en": "🇬🇧 English",
+    "language_uk": "🇺🇦 Українська"
+  },
+  "units": {
+    "days": {
+      "__plural__": {
+        "one": "{count} day",
+        "other": "{count} days"
+      }
+    },
+    "seconds": {
+      "__plural__": {
+        "one": "{count} second",
+        "other": "{count} seconds"
+      }
+    },
+    "posts": {
+      "__plural__": {
+        "one": "{count} new post",
+        "other": "{count} new posts"
+      }
+    }
+  },
+  "start": {
+    "greeting": "👋 <b>Telegram News Aggregator</b>\n\nPick a channel — I will show its latest posts and store them."
+  },
+  "help": {
+    "text": "ℹ️ <b>How to use</b>\n\n/start — channel list\n/language — interface language\n/premium — plans\n/subscription — subscription status\n/trial — free trial\n/help — this message\n\nThe «🔄 Refresh» button in the post list pulls fresh posts from the channel."
+  },
+  "channels": {
+    "choose": "📡 Pick a channel:",
+    "unknown": "This channel is no longer supported.",
+    "loading": "🔄 Loading posts from @{channel}…",
+    "refreshing": "Refreshing…",
+    "updated": "✅ Updated, {posts}",
+    "saved": "📋 Posts",
+    "empty": "📭 No stored posts for @{channel} yet.",
+    "pick_post": "{header} · <b>@{channel}</b>\n\nPick a post:",
+    "cooldown": "⏳ You can refresh this channel in {seconds}."
+  },
+  "post": {
+    "empty": "🖼 Post without text.",
+    "media_failed": "⚠️ Media is unavailable, showing text only.",
+    "not_found": "❌ Post not found."
+  },
+  "billing": {
+    "plans_header": "⭐ <b>Subscription</b>\n\nPayment goes through Telegram Stars — no cards, no external providers.\n\nPick a plan:",
+    "no_subscription": "💳 <b>No active subscription</b>\n\nSubscribe to use the aggregator without limits.",
+    "info": "💳 <b>Your subscription</b>\n\nPlan: <b>{plan}</b>\nStatus: <b>{status}</b>\nValid until: <b>{expires}</b>\nRemaining: <b>{left}</b>",
+    "invoice_failed": "❌ Could not create the invoice. Please try again later.",
+    "already_applied": "ℹ️ This payment has already been processed.",
+    "paid": "✅ <b>Payment received, thank you!</b>\n\nPlan: <b>{plan}</b>\nSubscription is active until: <b>{expires}</b>",
+    "not_activated": "⚠️ The payment went through, but the subscription could not be activated.\nPlease send this transaction code to support: <code>{charge_id}</code>",
+    "errors": {
+      "plan_not_found": "This plan is no longer available.",
+      "payment_not_found": "The invoice was not found or has expired.",
+      "payment_mismatch": "Payment details do not match the invoice.",
+      "too_many_pending": "Too many unpaid invoices. Complete or cancel the previous one."
+    },
+    "precheckout": {
+      "not_found": "Invoice not found. Please create a new one.",
+      "foreign": "This invoice belongs to another user.",
+      "already_paid": "This invoice has already been paid.",
+      "invalid": "This invoice is no longer valid.",
+      "expired": "The invoice has expired.",
+      "currency_mismatch": "Payment currency does not match the invoice.",
+      "amount_mismatch": "Payment amount does not match the invoice.",
+      "declined": "Payment declined."
+    }
+  },
+  "trial": {
+    "offer": "🎁 <b>Free trial for {days}</b>\n\nFull access to every channel and feature — free, with no charges.\n\nTo rule out repeated activation from several accounts, a phone number is required. Tap the button below — Telegram sends it for you.\n\nThe number is not stored: only an irreversible fingerprint goes into the database.\n\nChanged your mind — send /cancel.",
+    "need_button": "📱 A number from Telegram is required — text typed by hand cannot be verified.\n\nTap «Share phone number» or send /cancel.",
+    "cancelled": "Alright, the trial was not activated.",
+    "cancel_hint": "You can subscribe at any time.",
+    "declined_hint": "Access is available with a subscription.",
+    "activated_short": "✅ Trial activated.",
+    "activated": "🎁 <b>Free trial for {days}</b>\n\nPlan: <b>{plan}</b>\nValid until: <b>{expires}</b>\n\nI will remind you a day before it ends.",
+    "errors": {
+      "disabled": "The trial is currently unavailable.",
+      "already_claimed": "The trial has already been activated — it is granted once.",
+      "subscription_active": "You already have an active subscription — the trial is not needed.",
+      "contact_required": "Confirm your phone number to activate the trial.",
+      "foreign_contact": "This is someone else's contact. Tap «Share phone number» — forwarding a number from your address book will not work.",
+      "fingerprint_phone": "This phone number has already been used for a trial.",
+      "fingerprint_ip": "This address has already been used for a trial.",
+      "fingerprint_device": "This device has already been used for a trial.",
+      "fingerprint_other": "This identifier has already been used for a trial."
+    },
+    "reasons": {
+      "disabled": "The trial is switched off.",
+      "banned": "The account is banned.",
+      "used": "The trial has already been activated.",
+      "has_subscription": "You already have an active subscription.",
+      "unavailable": "The trial is unavailable."
+    }
+  },
+  "language": {
+    "menu": "🌐 <b>Interface language</b>\n\nCurrent: <b>{current}</b>\n\nPick a language:",
+    "changed": "✅ Interface language changed to <b>English</b>.",
+    "need_button": "Pick a language with the buttons below or send /cancel.",
+    "cancelled": "The interface language was left unchanged.",
+    "names": {
+      "ru": "Русский",
+      "en": "English",
+      "uk": "Українська"
+    },
+    "changed_alert": "✅ Done"
+  },
+  "throttle": {
+    "too_often": "⏳ Too often. Try again in {seconds}.",
+    "muted": "🚫 Too many requests. The bot will stay silent for {seconds}.",
+    "flood": "⏳ Too many requests. Wait a moment and try again."
+  },
+  "worker": {
+    "expiry_notice": "⏳ <b>Your subscription ends soon</b>\n\nPlan: <b>{plan}</b>\nValid until: <b>{expires}</b>\n\nExtend it so you do not lose access.",
+    "expired": "🔒 <b>Subscription ended</b>\n\nPlan <b>{plan}</b> expired on {expires}.\n\nSubscribe again to restore access."
+  }
+}

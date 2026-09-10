@@ -286,7 +286,9 @@ async def test_banned_user_cannot_activate_trial(trial: TrialService, make_user)
 async def test_check_eligibility_allows_fresh_user(trial: TrialService, user: User) -> None:
     eligibility = await trial.check_eligibility(user)
 
-    assert eligibility.available, f"Новому пользователю триал должен быть доступен: {eligibility.reason}"
+    assert eligibility.available, (
+        f"Новому пользователю триал должен быть доступен: {eligibility.reason_key}"
+    )
 
 
 async def test_check_eligibility_blocks_user_after_activation(
@@ -298,7 +300,13 @@ async def test_check_eligibility_blocks_user_after_activation(
     eligibility = await trial.check_eligibility(user)
 
     assert eligibility.blocked, "После активации триал должен быть недоступен"
-    assert eligibility.reason, "Причина отказа обязана быть заполнена для показа пользователю"
+    # Конкретная причина зависит от того, что проверка увидит раньше:
+    # отметку об активации или уже созданную подписку. Важно, что это
+    # ключ перевода, а не готовая фраза на одном языке.
+    assert eligibility.reason_key in {
+        "trial.reasons.used",
+        "trial.reasons.has_subscription",
+    }, f"Неожиданный ключ причины отказа: {eligibility.reason_key}"
 
 
 async def test_check_eligibility_blocks_when_disabled(

@@ -11,11 +11,20 @@ from db.enums import TrialFingerprintKind
 
 
 class TrialError(Exception):
-    """Базовая ошибка выдачи пробного периода."""
+    """Базовая ошибка выдачи пробного периода.
+
+    Несёт ключ перевода: язык пользователя известен слою хендлеров, а не
+    сервису. Текст исключения остаётся для логов.
+    """
+
+    #: Ключ строки в каталоге переводов.
+    key: str = "common.error"
 
 
 class TrialDisabledError(TrialError):
     """Пробный период отключён настройками."""
+
+    key = "trial.errors.disabled"
 
     def __init__(self) -> None:
         super().__init__("Пробный период сейчас недоступен.")
@@ -23,6 +32,8 @@ class TrialDisabledError(TrialError):
 
 class TrialAlreadyClaimedError(TrialError):
     """Пользователь уже активировал пробный период."""
+
+    key = "trial.errors.already_claimed"
 
     def __init__(self, user_id: int) -> None:
         self.user_id = user_id
@@ -32,12 +43,16 @@ class TrialAlreadyClaimedError(TrialError):
 class SubscriptionAlreadyActiveError(TrialError):
     """У пользователя уже есть действующая подписка."""
 
+    key = "trial.errors.subscription_active"
+
     def __init__(self) -> None:
         super().__init__("У вас уже есть действующая подписка — пробный период не нужен.")
 
 
 class ContactRequiredError(TrialError):
     """Для выдачи триала требуется подтверждённый номер телефона."""
+
+    key = "trial.errors.contact_required"
 
     def __init__(self) -> None:
         super().__init__("Чтобы активировать пробный период, подтвердите номер телефона.")
@@ -52,6 +67,8 @@ class ForeignContactError(TrialError):
     активировал бы триал по номерам всех своих знакомых.
     """
 
+    key = "trial.errors.foreign_contact"
+
     def __init__(self) -> None:
         super().__init__(
             "Это чужой контакт. Нажмите кнопку «Поделиться номером» — "
@@ -62,14 +79,17 @@ class ForeignContactError(TrialError):
 class TrialFingerprintTakenError(TrialError):
     """Признак уже использован для получения триала другим аккаунтом."""
 
-    #: Человекочитаемые названия признаков для текста отказа.
-    _LABELS = {
-        TrialFingerprintKind.PHONE: "Этот номер телефона",
-        TrialFingerprintKind.IP: "Этот адрес",
-        TrialFingerprintKind.DEVICE: "Это устройство",
+    key = "trial.errors.fingerprint_other"
+
+    #: Ключ перевода зависит от типа признака: «этот номер» и «это
+    #: устройство» требуют разного согласования в любом языке.
+    _KEYS = {
+        TrialFingerprintKind.PHONE: "trial.errors.fingerprint_phone",
+        TrialFingerprintKind.IP: "trial.errors.fingerprint_ip",
+        TrialFingerprintKind.DEVICE: "trial.errors.fingerprint_device",
     }
 
     def __init__(self, kind: TrialFingerprintKind | None = None) -> None:
         self.kind = kind
-        subject = self._LABELS.get(kind, "Этот признак") if kind else "Этот признак"
-        super().__init__(f"{subject} уже использовался для пробного периода.")
+        self.key = self._KEYS.get(kind, "trial.errors.fingerprint_other")
+        super().__init__(f"Признак {kind} уже использовался для пробного периода.")

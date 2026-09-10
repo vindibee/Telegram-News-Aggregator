@@ -68,7 +68,9 @@ class PreCheckoutDecision:
     """Ответ на ``PreCheckoutQuery``."""
 
     ok: bool
-    error_message: str | None = None
+    #: Ключ перевода с причиной отказа. Telegram показывает этот текст
+    #: пользователю, поэтому он обязан быть на его языке.
+    error_key: str | None = None
     payment_id: int | None = None
 
 
@@ -179,14 +181,14 @@ class BillingService:
         :param payload: Значение ``invoice_payload`` из запроса.
         :param total_amount: Сумма в минимальных единицах (для XTR — звёзды).
         :param currency: Валюта запроса.
-        :return: Решение с текстом ошибки для показа пользователю.
+        :return: Решение с ключом перевода причины отказа.
         """
         payment = await self._uow.payments.get_by_invoice_id_for_update(
             PaymentProvider.TELEGRAM_STARS, payload
         )
         if payment is None:
             logger.warning("PreCheckout по неизвестному счёту %r от %s", payload, telegram_id)
-            return PreCheckoutDecision(ok=False, error_message="Счёт не найден. Выставьте новый.")
+            return PreCheckoutDecision(ok=False, error_key="billing.precheckout.not_found")
 
         user = await self._uow.users.get(payment.user_id)
         if user is None or user.telegram_id != telegram_id:
@@ -194,36 +196,36 @@ class BillingService:
                 "PreCheckout: счёт id=%s принадлежит другому пользователю (ожидался %s)",
                 payment.id, telegram_id,
             )
-            return PreCheckoutDecision(ok=False, error_message="Счёт выставлен другому пользователю.")
+            return PreCheckoutDecision(ok=False, error_key="billing.precheckout.foreign")
 
         if payment.status is PaymentStatus.SUCCEEDED:
             logger.info("PreCheckout по уже оплаченному счёту id=%s", payment.id)
-            return PreCheckoutDecision(ok=False, error_message="Этот счёт уже оплачен.")
+            return PreCheckoutDecision(ok=False, error_key="billing.precheckout.already_paid")
 
         if payment.status not in (PaymentStatus.PENDING, PaymentStatus.PROCESSING):
             logger.warning(
                 "PreCheckout по счёту id=%s в состоянии %s", payment.id, payment.status
             )
-            return PreCheckoutDecision(ok=False, error_message="Счёт больше не действителен.")
+            return PreCheckoutDecision(ok=False, error_key="billing.precheckout.invalid")
 
         now = datetime.now(tz=timezone.utc)
         if payment.expires_at is not None and payment.expires_at <= now:
             logger.info("PreCheckout по просроченному счёту id=%s", payment.id)
-            return PreCheckoutDecision(ok=False, error_message="Срок действия счёта истёк.")
+            return PreCheckoutDecision(ok=False, error_key="billing.precheckout.expired")
 
         if currency.upper() != payment.currency:
             logger.error(
                 "PreCheckout: валюта %s не совпадает с счётом id=%s (%s)",
                 currency, payment.id, payment.currency,
             )
-            return PreCheckoutDecision(ok=False, error_message="Валюта платежа не совпадает со счётом.")
+            return PreCheckoutDecision(ok=False, error_key="billing.precheckout.currency_mismatch")
 
         if Decimal(total_amount) != payment.amount:
             logger.error(
                 "PreCheckout: сумма %s не совпадает с счётом id=%s (%s)",
                 total_amount, payment.id, payment.amount,
             )
-            return PreCheckoutDecision(ok=False, error_message="Сумма платежа не совпадает со счётом.")
+            return PreCheckoutDecision(ok=False, error_key="billing.precheckout.amount_mismatch")
 
         if payment.status is PaymentStatus.PENDING:
             payment.mark_processing()

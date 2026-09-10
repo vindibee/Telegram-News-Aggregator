@@ -51,7 +51,8 @@ class TrialEligibility:
     """
 
     available: bool
-    reason: str | None = None
+    #: Ключ перевода с причиной отказа — язык выбирает слой хендлеров.
+    reason_key: str | None = None
 
     @property
     def blocked(self) -> bool:
@@ -98,23 +99,23 @@ class TrialService:
         блокировкой.
 
         :param user: Пользователь.
-        :return: Доступность и причина отказа.
+        :return: Доступность и ключ перевода с причиной отказа.
         """
         if not self._config.enabled:
-            return TrialEligibility(available=False, reason="Пробный период отключён.")
+            return TrialEligibility(available=False, reason_key="trial.reasons.disabled")
 
         if user.is_banned:
-            return TrialEligibility(available=False, reason="Аккаунт заблокирован.")
+            return TrialEligibility(available=False, reason_key="trial.reasons.banned")
 
         if user.has_used_trial:
             return TrialEligibility(
-                available=False, reason="Пробный период уже был активирован."
+                available=False, reason_key="trial.reasons.used"
             )
 
         subscription = await self._uow.subscriptions.get_live(user.id)
         if subscription is not None:
             return TrialEligibility(
-                available=False, reason="У вас уже есть действующая подписка."
+                available=False, reason_key="trial.reasons.has_subscription"
             )
 
         return TrialEligibility(available=True)

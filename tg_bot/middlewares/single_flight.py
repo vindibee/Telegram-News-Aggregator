@@ -12,12 +12,13 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.types import CallbackQuery, TelegramObject, User
 
 from core.logger import get_logger
+from services.i18n import Translator
 from services.ratelimit.base import KeyGuard
 from tg_bot.flags import NO_SINGLE_FLIGHT_FLAG
+from tg_bot.middlewares.i18n import I18N_KEY
 
 logger = get_logger(__name__)
 
-_BUSY_TEXT: Final[str] = "⌛ Запрос уже обрабатывается."
 
 
 class SingleFlightMiddleware(BaseMiddleware):
@@ -58,7 +59,7 @@ class SingleFlightMiddleware(BaseMiddleware):
             logger.info(
                 "Повторное нажатие отклонено: user_id=%s, callback=%r", user.id, event.data
             )
-            await self._reject(event)
+            await self._reject(event, data.get(I18N_KEY))
             return None
 
         try:
@@ -77,9 +78,9 @@ class SingleFlightMiddleware(BaseMiddleware):
         return f"single-flight:{user_id}:{digest}"
 
     @staticmethod
-    async def _reject(event: CallbackQuery) -> None:
+    async def _reject(event: CallbackQuery, i18n: Translator | None) -> None:
         """Гасит «часики» на кнопке, не создавая сообщений в чате."""
         try:
-            await event.answer(_BUSY_TEXT)
+            await event.answer(i18n("common.busy") if i18n else "")
         except TelegramAPIError as exc:
             logger.warning("Не удалось ответить на повторное нажатие: %s", exc)

@@ -11,7 +11,7 @@ from sqlalchemy import func, literal_column, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from core.logger import get_logger
-from db.enums import TrialFingerprintKind
+from db.enums import Language, TrialFingerprintKind
 from db.models import TrialClaim, User
 from db.repositories.base import BaseRepository, handle_db_errors
 from db.repositories.errors import ConflictError, RepositoryError
@@ -92,6 +92,7 @@ class UserRepository(BaseRepository[User]):
         first_name: str | None = None,
         last_name: str | None = None,
         language_code: str | None = None,
+        language: Language | None = None,
         referred_by_id: int | None = None,
     ) -> UserUpsertResult:
         """Возвращает пользователя, создавая его при первом обращении.
@@ -106,6 +107,9 @@ class UserRepository(BaseRepository[User]):
         :param first_name: Имя.
         :param last_name: Фамилия.
         :param language_code: Языковой код клиента.
+        :param language: Язык интерфейса. Учитывается только при создании:
+            подсказка клиента Telegram не должна перекрывать язык, который
+            пользователь выбрал сам.
         :param referred_by_id: Пригласивший пользователь (учитывается только
             при создании — сменить «родителя» задним числом нельзя).
         :return: Пользователь и признак того, что он создан этим вызовом.
@@ -119,12 +123,19 @@ class UserRepository(BaseRepository[User]):
             "language_code": language_code,
         }
 
+        # Поля, которые проставляются только при вставке: обновлять их из
+        # каждого апдейта означало бы затирать выбор пользователя.
+        initial: dict[str, Any] = {
+            "language": language or Language.from_telegram(language_code),
+        }
+
         last_conflict: ConflictError | None = None
         for attempt in range(1, _REFERRAL_CODE_ATTEMPTS + 1):
             try:
                 return await self._upsert_user(
                     telegram_id=telegram_id,
                     profile=profile,
+                    initial=initial,
                     referred_by_id=referred_by_id,
                     referral_code=User.generate_referral_code(),
                     now=now,
@@ -149,6 +160,7 @@ class UserRepository(BaseRepository[User]):
         *,
         telegram_id: int,
         profile: Mapping[str, Any],
+        initial: Mapping[str, Any],
         referred_by_id: int | None,
         referral_code: str,
         now: datetime,
@@ -170,6 +182,7 @@ class UserRepository(BaseRepository[User]):
                     referred_by_id=referred_by_id,
                     last_seen_at=now,
                     **profile,
+                    **initial,
                 )
                 .on_conflict_do_update(
                     index_elements=["telegram_id"],
@@ -239,6 +252,24 @@ class UserRepository(BaseRepository[User]):
             TrialClaim.kind == kind, TrialClaim.fingerprint == fingerprint
         )
         return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    @handle_db_errors
+    async def set_language(self, user_id: int, language: Language) -> None:
+        """Сохраняет выбранный пользователем язык интерфейса.
+
+        Отдельный точечный UPDATE, а не изменение ORM-объекта: смена языка
+        приходит из хендлера, которому не нужна вся строка пользователя.
+
+        :param user_id: Идентификатор пользователя.
+        :param language: Новый язык.
+        """
+        stmt = (
+            update(User)
+            .where(User.id == user_id)
+            .values(language=language, updated_at=func.now())
+        )
+        await self._session.execute(stmt)
+        logger.info("Язык пользователя id=%s изменён на %s", user_id, language.value)
 
     @handle_db_errors
     async def mark_bot_blocked(self, user_id: int, *, blocked: bool = True) -> None:

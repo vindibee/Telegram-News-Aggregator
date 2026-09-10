@@ -26,6 +26,7 @@ class Language(StrEnum):
 
     RU = "ru"
     EN = "en"
+    UK = "uk"
 
     @classmethod
     def default(cls) -> Language:
@@ -47,6 +48,10 @@ class Language(StrEnum):
         # Telegram присылает и "en", и "en-US" — регион для выбора языка
         # интерфейса значения не имеет.
         primary = code.strip().lower().split("-", 1)[0]
+        # Украинские клиенты нередко сообщают "ua" — это код страны, а не
+        # языка, но приходит он достаточно часто, чтобы его учитывать.
+        if primary == "ua":
+            return cls.UK
         try:
             return cls(primary)
         except ValueError:

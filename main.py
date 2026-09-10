@@ -26,11 +26,13 @@ from services.dedup import DedupConfig
 from services.media import MediaDownloader
 from services.parser import TelegramWebParser
 from services.ratelimit.base import RateLimitBackend
+from services.i18n import LanguageCache, TranslationManager, build_language_cache
 from services.ratelimit.factory import build_backend, build_policy, build_rules
 from tg_bot.errors import register_error_handlers
 from tg_bot.handlers import router
 from tg_bot.middlewares import (
     DependenciesMiddleware,
+    I18nMiddleware,
     SingleFlightMiddleware,
     ThrottlingMiddleware,
     UserContextMiddleware,
@@ -96,6 +98,8 @@ def build_dispatcher(
     http_session: aiohttp.ClientSession,
     limiter: RateLimitBackend,
     storage: BaseStorage,
+    translations: TranslationManager,
+    language_cache: LanguageCache,
 ) -> Dispatcher:
     """Собирает диспетчер со всеми зависимостями, middleware и хендлерами."""
     parser = TelegramWebParser(http_session, settings.parser)
@@ -108,6 +112,8 @@ def build_dispatcher(
     dispatcher["settings"] = settings
     dispatcher["renderer"] = PostRenderer(downloader, settings.display_timezone)
     dispatcher["limiter"] = limiter
+    dispatcher["translations"] = translations
+    dispatcher["language_cache"] = language_cache
 
     # outer_middleware срабатывает до фильтров, поэтому сессия БД доступна и им.
     dispatcher.update.outer_middleware(
@@ -123,6 +129,10 @@ def build_dispatcher(
     # Строго после зависимостей: регистрация пользователя работает в уже
     # открытой транзакции.
     dispatcher.update.outer_middleware(UserContextMiddleware())
+    # После пользовательского контекста: язык берётся из уже загруженной
+    # строки, а в базу приходится идти только при промахе кэша у тех
+    # обновлений, которые до регистрации не доходят.
+    dispatcher.update.outer_middleware(I18nMiddleware(translations, language_cache))
 
     if settings.rate_limit.enabled:
         # Внутренние middleware наблюдателей: только здесь известен выбранный
@@ -159,6 +169,10 @@ async def run() -> None:
     http_session = build_http_session(settings)
     limiter = build_backend(settings.redis)
     storage = build_fsm_storage(settings)
+    # Каталоги читаются на старте: ошибка в файле перевода должна
+    # ронять запуск, а не всплывать в чате у пользователя.
+    translations = TranslationManager.from_directory()
+    language_cache = build_language_cache(settings.redis)
 
     try:
         # Схема БД разворачивается миграциями Alembic ("alembic upgrade head"),
@@ -169,7 +183,9 @@ async def run() -> None:
         # каждое сообщение, а причина останется невидимой.
         await database.check_ready()
 
-        dispatcher = build_dispatcher(settings, database, http_session, limiter, storage)
+        dispatcher = build_dispatcher(
+            settings, database, http_session, limiter, storage, translations, language_cache
+        )
 
         me = await bot.get_me()
         logger.info("Бот @%s запущен и готов к работе.", me.username)
@@ -185,6 +201,7 @@ async def run() -> None:
         await http_session.close()
         await bot.session.close()
         await limiter.close()
+        await language_cache.close()
         await storage.close()
         await database.dispose()
         logger.info("Приложение остановлено.")

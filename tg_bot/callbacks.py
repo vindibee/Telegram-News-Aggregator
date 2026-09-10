@@ -39,6 +39,12 @@ class PlanCB(CallbackData, prefix="plan"):
     option_id: str
 
 
+class LanguageCB(CallbackData, prefix="lang"):
+    """Выбрать язык интерфейса."""
+
+    code: str
+
+
 #: Действие «вернуться к списку каналов».
 ACTION_CHANNELS = "channels"
 
@@ -50,3 +56,6 @@ ACTION_SUBSCRIPTION = "subscription"
 
 #: Действие «активировать пробный период».
 ACTION_TRIAL = "trial"
+
+#: Действие «показать выбор языка».
+ACTION_LANGUAGE = "language"

@@ -21,6 +21,7 @@ from core.pricing import PLAN_OPTIONS
 from db.models import User
 from db.uow import UnitOfWork
 from services.billing import BillingError, BillingService
+from services.i18n import Translator
 from services.trial import TrialService
 from tg_bot.callbacks import ACTION_PLANS, ACTION_SUBSCRIPTION, MenuCB, PlanCB
 from tg_bot.flags import rate_limit, skip_throttling
@@ -31,33 +32,26 @@ logger = get_logger(__name__)
 
 router = Router(name="billing")
 
-_PLANS_HEADER = (
-    "⭐ <b>Подписка</b>\n\n"
-    "Оплата проходит звёздами Telegram — без карт и внешних платёжных систем.\n\n"
-    "Выберите тариф:"
-)
-_NO_SUBSCRIPTION = (
-    "💳 <b>Подписка не оформлена</b>\n\n"
-    "Оформите подписку, чтобы пользоваться агрегатором без ограничений."
-)
-_PAYMENT_FAILED = "❌ Не удалось оформить счёт. Попробуйте позже."
-_ALREADY_APPLIED = "ℹ️ Этот платёж уже был учтён ранее."
 
 
 @router.message(Command("premium"))
-async def cmd_premium(message: Message) -> None:
+async def cmd_premium(message: Message, i18n: Translator) -> None:
     """Показывает список тарифов."""
-    await message.answer(_PLANS_HEADER, reply_markup=kb_plans(PLAN_OPTIONS))
+    await message.answer(
+        i18n("billing.plans_header"), reply_markup=kb_plans(PLAN_OPTIONS, i18n)
+    )
 
 
 @router.callback_query(MenuCB.filter(F.action == ACTION_PLANS))
-async def show_plans(callback: CallbackQuery) -> None:
+async def show_plans(callback: CallbackQuery, i18n: Translator) -> None:
     """Показывает список тарифов по кнопке."""
     await callback.answer()
     target = get_message(callback)
     if target is None:
         return
-    await safe_edit_text(target, _PLANS_HEADER, kb_plans(PLAN_OPTIONS))
+    await safe_edit_text(
+        target, i18n("billing.plans_header"), kb_plans(PLAN_OPTIONS, i18n)
+    )
 
 
 @router.message(Command("subscription"))
@@ -67,9 +61,10 @@ async def cmd_subscription(
     uow: UnitOfWork,
     settings: Settings,
     trial: TrialService,
+    i18n: Translator,
 ) -> None:
     """Показывает состояние подписки командой."""
-    text, markup = await _subscription_screen(user, uow, settings, trial)
+    text, markup = await _subscription_screen(user, uow, settings, trial, i18n)
     await message.answer(text, reply_markup=markup)
 
 
@@ -80,13 +75,14 @@ async def show_subscription(
     uow: UnitOfWork,
     settings: Settings,
     trial: TrialService,
+    i18n: Translator,
 ) -> None:
     """Показывает состояние подписки по кнопке."""
     await callback.answer()
     target = get_message(callback)
     if target is None:
         return
-    text, markup = await _subscription_screen(user, uow, settings, trial)
+    text, markup = await _subscription_screen(user, uow, settings, trial, i18n)
     await safe_edit_text(target, text, markup)
 
 
@@ -98,6 +94,7 @@ async def send_invoice(
     callback_data: PlanCB,
     user: User,
     billing: BillingService,
+    i18n: Translator,
 ) -> None:
     """Выставляет счёт на выбранный тариф."""
     await callback.answer()
@@ -109,7 +106,7 @@ async def send_invoice(
         invoice = await billing.create_invoice(user, callback_data.option_id)
     except BillingError as exc:
         logger.info("Отказ в выставлении счёта пользователю %s: %s", user.id, exc)
-        await target.answer(f"❌ {exc}")
+        await target.answer(i18n(exc.key))
         return
 
     try:
@@ -124,13 +121,17 @@ async def send_invoice(
         )
     except TelegramAPIError as exc:
         logger.error("Не удалось отправить счёт id=%s: %s", invoice.payment_id, exc)
-        await target.answer(_PAYMENT_FAILED)
+        await target.answer(i18n("billing.invoice_failed"))
 
 
 # Telegram ждёт ответ не дольше 10 секунд и отменяет платёж при опоздании,
 # поэтому троттлинг здесь отключён: задержка дороже риска флуда.
 @router.pre_checkout_query(**skip_throttling())
-async def process_pre_checkout(query: PreCheckoutQuery, billing: BillingService) -> None:
+async def process_pre_checkout(
+    query: PreCheckoutQuery,
+    billing: BillingService,
+    i18n: Translator,
+) -> None:
     """Подтверждает или отклоняет оплату до списания средств."""
     decision = await billing.validate_pre_checkout(
         telegram_id=query.from_user.id,
@@ -143,7 +144,10 @@ async def process_pre_checkout(query: PreCheckoutQuery, billing: BillingService)
         if decision.ok:
             await query.answer(ok=True)
         else:
-            await query.answer(ok=False, error_message=decision.error_message or "Оплата отклонена.")
+            await query.answer(
+                ok=False,
+                error_message=i18n(decision.error_key or "billing.precheckout.declined"),
+            )
     except TelegramAPIError as exc:
         # Ответить не удалось — Telegram отменит платёж сам. Записываем всё
         # необходимое для ручного разбора.
@@ -158,6 +162,7 @@ async def process_successful_payment(
     message: Message,
     billing: BillingService,
     settings: Settings,
+    i18n: Translator,
 ) -> None:
     """Учитывает оплату и активирует подписку."""
     payment = message.successful_payment
@@ -190,13 +195,17 @@ async def process_successful_payment(
             payment.telegram_payment_charge_id, payment.invoice_payload, exc,
         )
         await message.answer(
-            "⚠️ Оплата прошла, но активировать подписку не удалось.\n"
-            f"Сообщите в поддержку код операции: <code>{escape(payment.telegram_payment_charge_id)}</code>"
+            i18n(
+                "billing.not_activated",
+                charge_id=escape(payment.telegram_payment_charge_id),
+            )
         )
         return
 
     if outcome.already_processed:
-        await message.answer(_ALREADY_APPLIED, reply_markup=kb_after_payment())
+        await message.answer(
+            i18n("billing.already_applied"), reply_markup=kb_after_payment(i18n)
+        )
         return
 
     expires = (
@@ -205,10 +214,12 @@ async def process_successful_payment(
         else "—"
     )
     await message.answer(
-        "✅ <b>Оплата получена, спасибо!</b>\n\n"
-        f"Тариф: <b>{escape(outcome.plan.value)}</b>\n"
-        f"Подписка активна до: <b>{escape(expires)}</b>",
-        reply_markup=kb_after_payment(),
+        i18n(
+            "billing.paid",
+            plan=escape(outcome.plan.value),
+            expires=escape(expires),
+        ),
+        reply_markup=kb_after_payment(i18n),
     )
 
 
@@ -217,6 +228,7 @@ async def _subscription_screen(
     uow: UnitOfWork,
     settings: Settings,
     trial: TrialService,
+    i18n: Translator,
 ) -> tuple[str, InlineKeyboardMarkup]:
     """Собирает экран подписки вместе с клавиатурой.
 
@@ -225,10 +237,11 @@ async def _subscription_screen(
 
     :return: Пара «текст сообщения, клавиатура».
     """
-    text, has_subscription = await _describe_subscription(user, uow, settings)
+    text, has_subscription = await _describe_subscription(user, uow, settings, i18n)
     eligibility = await trial.check_eligibility(user)
     markup = kb_subscription(
         has_subscription,
+        i18n,
         trial_available=eligibility.available,
         trial_days=trial.days,
     )
@@ -239,6 +252,7 @@ async def _describe_subscription(
     user: User,
     uow: UnitOfWork,
     settings: Settings,
+    i18n: Translator,
 ) -> tuple[str, bool]:
     """Формирует описание текущей подписки.
 
@@ -246,15 +260,15 @@ async def _describe_subscription(
     """
     subscription = await uow.subscriptions.get_live(user.id)
     if subscription is None:
-        return _NO_SUBSCRIPTION, False
+        return i18n("billing.no_subscription"), False
 
     now = datetime.now(tz=timezone.utc)
     expires = subscription.expires_at.astimezone(settings.display_timezone).strftime("%d.%m.%Y %H:%M")
-    text = (
-        "💳 <b>Ваша подписка</b>\n\n"
-        f"Тариф: <b>{escape(subscription.plan.value)}</b>\n"
-        f"Статус: <b>{escape(subscription.status.value)}</b>\n"
-        f"Действует до: <b>{escape(expires)}</b>\n"
-        f"Осталось дней: <b>{subscription.days_left(now)}</b>"
+    text = i18n(
+        "billing.info",
+        plan=escape(subscription.plan.value),
+        status=escape(subscription.status.value),
+        expires=escape(expires),
+        left=i18n.plural("units.days", subscription.days_left(now)),
     )
     return text, True

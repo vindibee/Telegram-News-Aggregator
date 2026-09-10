@@ -12,6 +12,13 @@ from __future__ import annotations
 from aiogram.fsm.state import State, StatesGroup
 
 
+class LanguageStates(StatesGroup):
+    """Смена языка интерфейса."""
+
+    #: Ждём нажатия на кнопку с языком.
+    choosing = State()
+
+
 class TrialStates(StatesGroup):
     """Активация пробного периода."""
 

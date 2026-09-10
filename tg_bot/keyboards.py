@@ -1,4 +1,10 @@
-"""Сборка инлайн-клавиатур."""
+"""Сборка клавиатур с локализованными подписями.
+
+Каждая функция принимает :class:`~services.i18n.Translator`. Передавать
+язык вместо готового локализатора было бы соблазнительно, но тогда каждая
+клавиатура сама решала бы, где взять каталог, и в проекте появилось бы
+несколько путей к одним и тем же строкам.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +12,7 @@ from collections.abc import Sequence
 from datetime import tzinfo
 
 from aiogram.types import (
+    InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
@@ -15,13 +22,17 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.config import MAX_BUTTON_TEXT_LENGTH, Channel
 from core.pricing import PlanOption
+from db.enums import Language
 from db.models import Post
+from services.i18n import Translator
 from tg_bot.callbacks import (
     ACTION_CHANNELS,
+    ACTION_LANGUAGE,
     ACTION_PLANS,
     ACTION_SUBSCRIPTION,
     ACTION_TRIAL,
     ChannelCB,
+    LanguageCB,
     MenuCB,
     PlanCB,
     PostCB,
@@ -30,8 +41,12 @@ from tg_bot.callbacks import (
 from tg_bot.utils import shorten
 
 
-def kb_channels(channels: Sequence[Channel]) -> InlineKeyboardMarkup:
-    """Клавиатура выбора канала."""
+def kb_channels(channels: Sequence[Channel], i18n: Translator) -> InlineKeyboardMarkup:
+    """Клавиатура выбора канала.
+
+    Названия каналов не переводятся: это имена собственные, и «Хабр» на
+    любом языке остаётся «Хабром».
+    """
     builder = InlineKeyboardBuilder()
     for channel in channels:
         builder.button(
@@ -39,6 +54,15 @@ def kb_channels(channels: Sequence[Channel]) -> InlineKeyboardMarkup:
             callback_data=ChannelCB(username=channel.username),
         )
     builder.adjust(2)
+    # Кнопка языка отдельной строкой под сеткой каналов: сюда попадает
+    # человек, который не понимает остального интерфейса, и она должна
+    # быть заметной, а не теряться среди названий каналов.
+    builder.row(
+        InlineKeyboardButton(
+            text=i18n("buttons.language"),
+            callback_data=MenuCB(action=ACTION_LANGUAGE).pack(),
+        )
+    )
     return builder.as_markup()
 
 
@@ -46,38 +70,45 @@ def kb_posts(
     posts: Sequence[Post],
     username: str,
     display_tz: tzinfo,
+    i18n: Translator,
 ) -> InlineKeyboardMarkup:
     """Клавиатура со списком постов канала и кнопками управления."""
     builder = InlineKeyboardBuilder()
 
     for post in posts:
         stamp = post.post_time.astimezone(display_tz).strftime("%d.%m %H:%M")
-        preview = shorten(post.content or "медиа без текста", MAX_BUTTON_TEXT_LENGTH - len(stamp) - 6)
+        preview = shorten(
+            post.content or i18n("post.empty"), MAX_BUTTON_TEXT_LENGTH - len(stamp) - 6
+        )
         builder.button(text=f"📅 {stamp} | {preview}", callback_data=PostCB(id=post.id))
 
-    builder.button(text="🔄 Обновить", callback_data=RefreshCB(username=username))
-    builder.button(text="◀️ К каналам", callback_data=MenuCB(action=ACTION_CHANNELS))
+    builder.button(text=i18n("buttons.refresh"), callback_data=RefreshCB(username=username))
+    builder.button(
+        text=i18n("buttons.back_to_channels"), callback_data=MenuCB(action=ACTION_CHANNELS)
+    )
     builder.adjust(1)
     return builder.as_markup()
 
 
-def kb_back(username: str) -> InlineKeyboardMarkup:
+def kb_back(username: str, i18n: Translator) -> InlineKeyboardMarkup:
     """Клавиатура возврата из карточки поста."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="◀️ Назад к постам", callback_data=ChannelCB(username=username))
-    builder.button(text="🏠 К каналам", callback_data=MenuCB(action=ACTION_CHANNELS))
+    builder.button(text=i18n("buttons.back_to_posts"), callback_data=ChannelCB(username=username))
+    builder.button(text=i18n("buttons.home"), callback_data=MenuCB(action=ACTION_CHANNELS))
     builder.adjust(1)
     return builder.as_markup()
 
 
-def kb_to_channels() -> InlineKeyboardMarkup:
+def kb_to_channels(i18n: Translator) -> InlineKeyboardMarkup:
     """Клавиатура из одной кнопки возврата в главное меню (экраны ошибок)."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="◀️ К каналам", callback_data=MenuCB(action=ACTION_CHANNELS))
+    builder.button(
+        text=i18n("buttons.back_to_channels"), callback_data=MenuCB(action=ACTION_CHANNELS)
+    )
     return builder.as_markup()
 
 
-def kb_plans(options: Sequence[PlanOption]) -> InlineKeyboardMarkup:
+def kb_plans(options: Sequence[PlanOption], i18n: Translator) -> InlineKeyboardMarkup:
     """Клавиатура выбора тарифа.
 
     Цена выносится в текст кнопки: пользователь видит сумму до открытия
@@ -89,13 +120,14 @@ def kb_plans(options: Sequence[PlanOption]) -> InlineKeyboardMarkup:
             text=f"{option.title} — {option.stars} ⭐",
             callback_data=PlanCB(option_id=option.id),
         )
-    builder.button(text="◀️ Назад", callback_data=MenuCB(action=ACTION_CHANNELS))
+    builder.button(text=i18n("buttons.back"), callback_data=MenuCB(action=ACTION_CHANNELS))
     builder.adjust(1)
     return builder.as_markup()
 
 
 def kb_subscription(
     has_subscription: bool,
+    i18n: Translator,
     *,
     trial_available: bool = False,
     trial_days: int = 0,
@@ -109,19 +141,19 @@ def kb_subscription(
     builder = InlineKeyboardBuilder()
     if trial_available:
         builder.button(
-            text=f"🎁 Пробный период на {trial_days} дн.",
+            text=i18n("buttons.trial", days=i18n.plural("units.days", trial_days)),
             callback_data=MenuCB(action=ACTION_TRIAL),
         )
     builder.button(
-        text="⭐ Продлить" if has_subscription else "⭐ Оформить подписку",
+        text=i18n("buttons.extend") if has_subscription else i18n("buttons.buy"),
         callback_data=MenuCB(action=ACTION_PLANS),
     )
-    builder.button(text="📡 К каналам", callback_data=MenuCB(action=ACTION_CHANNELS))
+    builder.button(text=i18n("buttons.channels"), callback_data=MenuCB(action=ACTION_CHANNELS))
     builder.adjust(1)
     return builder.as_markup()
 
 
-def kb_request_contact(prompt: str = "📱 Поделиться номером") -> ReplyKeyboardMarkup:
+def kb_request_contact(i18n: Translator) -> ReplyKeyboardMarkup:
     """Клавиатура запроса телефона.
 
     Это единственный способ получить номер, подтверждённый самим Telegram:
@@ -132,10 +164,9 @@ def kb_request_contact(prompt: str = "📱 Поделиться номером")
     явно: флаг лишь сворачивает её на клиенте, а не снимает.
     """
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=prompt, request_contact=True)]],
+        keyboard=[[KeyboardButton(text=i18n("buttons.share_phone"), request_contact=True)]],
         resize_keyboard=True,
         one_time_keyboard=True,
-        input_field_placeholder="Нажмите кнопку ниже",
         selective=True,
     )
 
@@ -145,28 +176,51 @@ def kb_hide_contact_request() -> ReplyKeyboardRemove:
     return ReplyKeyboardRemove()
 
 
-def kb_trial_declined() -> InlineKeyboardMarkup:
+def kb_trial_declined(i18n: Translator) -> InlineKeyboardMarkup:
     """Клавиатура после отказа от подтверждения телефона."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="⭐ Оформить подписку", callback_data=MenuCB(action=ACTION_PLANS))
-    builder.button(text="📡 К каналам", callback_data=MenuCB(action=ACTION_CHANNELS))
+    builder.button(text=i18n("buttons.buy"), callback_data=MenuCB(action=ACTION_PLANS))
+    builder.button(text=i18n("buttons.channels"), callback_data=MenuCB(action=ACTION_CHANNELS))
     builder.adjust(1)
     return builder.as_markup()
 
 
-def kb_after_trial() -> InlineKeyboardMarkup:
+def kb_after_trial(i18n: Translator) -> InlineKeyboardMarkup:
     """Клавиатура после успешной активации пробного периода."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="📡 К каналам", callback_data=MenuCB(action=ACTION_CHANNELS))
-    builder.button(text="💳 Моя подписка", callback_data=MenuCB(action=ACTION_SUBSCRIPTION))
+    builder.button(text=i18n("buttons.channels"), callback_data=MenuCB(action=ACTION_CHANNELS))
+    builder.button(
+        text=i18n("buttons.my_subscription"), callback_data=MenuCB(action=ACTION_SUBSCRIPTION)
+    )
     builder.adjust(1)
     return builder.as_markup()
 
 
-def kb_after_payment() -> InlineKeyboardMarkup:
+def kb_after_payment(i18n: Translator) -> InlineKeyboardMarkup:
     """Клавиатура после успешной оплаты."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="📡 К каналам", callback_data=MenuCB(action=ACTION_CHANNELS))
-    builder.button(text="💳 Моя подписка", callback_data=MenuCB(action=ACTION_SUBSCRIPTION))
+    builder.button(text=i18n("buttons.channels"), callback_data=MenuCB(action=ACTION_CHANNELS))
+    builder.button(
+        text=i18n("buttons.my_subscription"), callback_data=MenuCB(action=ACTION_SUBSCRIPTION)
+    )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def kb_languages(current: Language, i18n: Translator) -> InlineKeyboardMarkup:
+    """Клавиатура выбора языка интерфейса.
+
+    Названия языков намеренно записаны на них самих: человек, попавший в
+    бот с незнакомым ему языком интерфейса, должен узнать свой вариант, не
+    понимая остального текста. Текущий язык помечается галочкой.
+    """
+    builder = InlineKeyboardBuilder()
+    for language in Language:
+        label = i18n(f"buttons.language_{language.value}")
+        builder.button(
+            text=f"✅ {label}" if language is current else label,
+            callback_data=LanguageCB(code=language.value),
+        )
+    builder.button(text=i18n("buttons.channels"), callback_data=MenuCB(action=ACTION_CHANNELS))
     builder.adjust(1)
     return builder.as_markup()

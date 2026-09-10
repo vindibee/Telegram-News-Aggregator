@@ -13,12 +13,12 @@ from aiogram.types import CallbackQuery, Message, TelegramObject, User
 from core.logger import get_logger
 from services.ratelimit.base import RateLimitRule
 from services.ratelimit.policy import AntiFloodPolicy, FloodAction, FloodVerdict
+from services.i18n import Translator
 from tg_bot.flags import RATE_LIMIT_FLAG, SKIP_THROTTLING_FLAG
+from tg_bot.middlewares.i18n import I18N_KEY
 
 logger = get_logger(__name__)
 
-_THROTTLE_TEXT = "⏳ Слишком часто. Попробуйте через {seconds} с."
-_MUTE_TEXT = "🚫 Слишком много запросов. Бот не будет отвечать {seconds} с."
 
 
 class ThrottlingMiddleware(BaseMiddleware):
@@ -66,13 +66,18 @@ class ThrottlingMiddleware(BaseMiddleware):
         if not verdict.blocked:
             return await handler(event, data)
 
-        await self._notify(event, verdict)
+        await self._notify(event, verdict, data.get(I18N_KEY))
         # Возврат None вместо вызова хендлера: обработка обновления
         # прекращается, но апдейт считается обработанным, и aiogram не
         # передаёт его дальше по цепочке роутеров.
         return None
 
-    async def _notify(self, event: TelegramObject, verdict: FloodVerdict) -> None:
+    async def _notify(
+        self,
+        event: TelegramObject,
+        verdict: FloodVerdict,
+        i18n: Translator | None,
+    ) -> None:
         """Сообщает пользователю о срабатывании ограничения.
 
         Для нажатий на кнопки ответ отправляется всегда, даже без текста:
@@ -85,9 +90,17 @@ class ThrottlingMiddleware(BaseMiddleware):
 
         Ошибки доставки не прерывают обработку — они лишь логируются.
         """
-        text = (
-            _MUTE_TEXT if verdict.action is FloodAction.MUTE else _THROTTLE_TEXT
-        ).format(seconds=verdict.retry_after)
+        if i18n is None:
+            # Локализатор кладёт middleware, который стоит выше по цепочке;
+            # его отсутствие означает ошибку сборки диспетчера, а не
+            # штатную ситуацию, — но молчать в ответ на флуд нельзя.
+            logger.error("ThrottlingMiddleware вызван без локализатора")
+            return
+
+        key = (
+            "throttle.muted" if verdict.action is FloodAction.MUTE else "throttle.too_often"
+        )
+        text = i18n(key, seconds=i18n.plural("units.seconds", verdict.retry_after))
 
         try:
             if isinstance(event, CallbackQuery):

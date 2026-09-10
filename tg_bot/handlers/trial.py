@@ -24,6 +24,7 @@ from aiogram.types import CallbackQuery, Contact, Message
 from core.config import Settings
 from core.logger import get_logger
 from db.models import User
+from services.i18n import Translator
 from services.trial import ForeignContactError, TrialError, TrialOutcome, TrialService
 from tg_bot.callbacks import ACTION_TRIAL, MenuCB
 from tg_bot.flags import rate_limit
@@ -41,26 +42,6 @@ logger = get_logger(__name__)
 
 router = Router(name="trial")
 
-_OFFER = (
-    "🎁 <b>Пробный период на {days} дн.</b>\n\n"
-    "Полный доступ ко всем каналам и функциям — бесплатно и без списаний.\n\n"
-    "Чтобы исключить повторную активацию с нескольких аккаунтов, "
-    "нужен номер телефона. Нажмите кнопку ниже — Telegram передаст его сам.\n\n"
-    "Номер не сохраняется: в базу попадает только необратимый отпечаток.\n\n"
-    "Передумали — отправьте /cancel."
-)
-_NEED_BUTTON = (
-    "📱 Нужен именно номер из Telegram — введённый вручную текст подтвердить нельзя.\n\n"
-    "Нажмите кнопку «Поделиться номером» или отправьте /cancel."
-)
-_CANCELLED = "Хорошо, пробный период не активирован."
-_ACTIVATED_SHORT = "✅ Пробный период активирован."
-_ACTIVATED = (
-    "🎁 <b>Пробный период на {days} дн.</b>\n\n"
-    "Тариф: <b>{plan}</b>\n"
-    "Действует до: <b>{expires}</b>\n\n"
-    "За сутки до окончания я напомню."
-)
 
 
 @router.message(Command("trial"), **rate_limit(3, 300, scope="trial"))
@@ -70,9 +51,10 @@ async def cmd_trial(
     trial: TrialService,
     state: FSMContext,
     settings: Settings,
+    i18n: Translator,
 ) -> None:
     """Начинает выдачу пробного периода по команде."""
-    await _offer_trial(message, user, trial, state, settings)
+    await _offer_trial(message, user, trial, state, settings, i18n)
 
 
 @router.callback_query(MenuCB.filter(F.action == ACTION_TRIAL), **rate_limit(3, 300, scope="trial"))
@@ -82,23 +64,24 @@ async def start_trial(
     trial: TrialService,
     state: FSMContext,
     settings: Settings,
+    i18n: Translator,
 ) -> None:
     """Начинает выдачу пробного периода по кнопке."""
     await callback.answer()
     target = get_message(callback)
     if target is None:
         return
-    await _offer_trial(target, user, trial, state, settings)
+    await _offer_trial(target, user, trial, state, settings, i18n)
 
 
 @router.message(TrialStates.waiting_for_contact, Command("cancel"))
-async def cancel_trial(message: Message, state: FSMContext) -> None:
+async def cancel_trial(message: Message, state: FSMContext, i18n: Translator) -> None:
     """Прерывает диалог подтверждения телефона."""
     await state.clear()
     # Сначала снимаем клавиатуру запроса номера: инлайн-кнопки и
     # reply-клавиатуру нельзя приложить к одному сообщению.
-    await message.answer(_CANCELLED, reply_markup=kb_hide_contact_request())
-    await message.answer("Подписку можно оформить в любой момент.", reply_markup=kb_trial_declined())
+    await message.answer(i18n("trial.cancelled"), reply_markup=kb_hide_contact_request())
+    await message.answer(i18n("trial.cancel_hint"), reply_markup=kb_trial_declined(i18n))
 
 
 @router.message(TrialStates.waiting_for_contact, F.contact)
@@ -108,6 +91,7 @@ async def process_contact(
     trial: TrialService,
     state: FSMContext,
     settings: Settings,
+    i18n: Translator,
 ) -> None:
     """Проверяет присланный контакт и активирует пробный период."""
     contact = message.contact
@@ -120,22 +104,22 @@ async def process_contact(
     except TrialError as exc:
         logger.info("Отказ в пробном периоде для user_id=%s: %s", user.id, exc)
         await state.clear()
-        await message.answer(f"❌ {exc}", reply_markup=kb_hide_contact_request())
-        await message.answer("Доступ можно получить по подписке.", reply_markup=kb_trial_declined())
+        await message.answer(i18n(exc.key), reply_markup=kb_hide_contact_request())
+        await message.answer(i18n("trial.declined_hint"), reply_markup=kb_trial_declined(i18n))
         return
 
     await state.clear()
-    await message.answer(_ACTIVATED_SHORT, reply_markup=kb_hide_contact_request())
+    await message.answer(i18n("trial.activated_short"), reply_markup=kb_hide_contact_request())
     await message.answer(
-        _describe_outcome(outcome, settings),
-        reply_markup=kb_after_trial(),
+        _describe_outcome(outcome, settings, i18n),
+        reply_markup=kb_after_trial(i18n),
     )
 
 
 @router.message(TrialStates.waiting_for_contact)
-async def remind_contact(message: Message) -> None:
+async def remind_contact(message: Message, i18n: Translator) -> None:
     """Отвечает на любой другой ввод, не выходя из состояния."""
-    await message.answer(_NEED_BUTTON, reply_markup=kb_request_contact())
+    await message.answer(i18n("trial.need_button"), reply_markup=kb_request_contact(i18n))
 
 
 async def _offer_trial(
@@ -144,6 +128,7 @@ async def _offer_trial(
     trial: TrialService,
     state: FSMContext,
     settings: Settings,
+    i18n: Translator,
 ) -> None:
     """Проверяет доступность триала и запрашивает телефон.
 
@@ -157,8 +142,8 @@ async def _offer_trial(
     if eligibility.blocked:
         await state.clear()
         await message.answer(
-            f"ℹ️ {escape(eligibility.reason or 'Пробный период недоступен.')}",
-            reply_markup=kb_to_channels(),
+            i18n(eligibility.reason_key or "trial.reasons.unavailable"),
+            reply_markup=kb_to_channels(i18n),
         )
         return
 
@@ -168,17 +153,19 @@ async def _offer_trial(
             outcome = await trial.activate(user)
         except TrialError as exc:
             logger.info("Отказ в пробном периоде для user_id=%s: %s", user.id, exc)
-            await message.answer(f"❌ {exc}", reply_markup=kb_trial_declined())
+            await message.answer(i18n(exc.key), reply_markup=kb_trial_declined(i18n))
             return
 
         await state.clear()
-        await message.answer(_describe_outcome(outcome, settings), reply_markup=kb_after_trial())
+        await message.answer(
+            _describe_outcome(outcome, settings, i18n), reply_markup=kb_after_trial(i18n)
+        )
         return
 
     await state.set_state(TrialStates.waiting_for_contact)
     await message.answer(
-        _OFFER.format(days=trial.days),
-        reply_markup=kb_request_contact(),
+        i18n("trial.offer", days=i18n.plural("units.days", trial.days)),
+        reply_markup=kb_request_contact(i18n),
     )
 
 
@@ -211,11 +198,16 @@ def _own_phone(contact: Contact, message: Message) -> str:
     return contact.phone_number
 
 
-def _describe_outcome(outcome: TrialOutcome, settings: Settings) -> str:
+def _describe_outcome(
+    outcome: TrialOutcome,
+    settings: Settings,
+    i18n: Translator,
+) -> str:
     """Формирует сообщение об активированном пробном периоде."""
     expires: datetime = outcome.expires_at.astimezone(settings.display_timezone)
-    return _ACTIVATED.format(
-        days=outcome.days_granted,
+    return i18n(
+        "trial.activated",
+        days=i18n.plural("units.days", outcome.days_granted),
         plan=escape(outcome.plan.value),
         expires=escape(expires.strftime("%d.%m.%Y %H:%M")),
     )

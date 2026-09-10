@@ -16,23 +16,12 @@ from core.config import Settings
 from core.logger import get_logger
 from db.models import Subscription
 from db.uow import UnitOfWorkFactory
+from services.i18n import TranslationManager, Translator
 from services.notifier import TelegramNotifier
 from worker.tasks.base import PeriodicTask, TaskResult
 
 logger = get_logger(__name__)
 
-_EXPIRY_TEXT: Final[str] = (
-    "⏳ <b>Подписка скоро закончится</b>\n\n"
-    "Тариф: <b>{plan}</b>\n"
-    "Действует до: <b>{expires}</b>\n\n"
-    "Продлите её, чтобы не потерять доступ."
-)
-
-_EXPIRED_TEXT: Final[str] = (
-    "🔒 <b>Подписка закончилась</b>\n\n"
-    "Тариф <b>{plan}</b> перестал действовать {expires}.\n\n"
-    "Оформите новую подписку, чтобы вернуть доступ."
-)
 
 
 class ExpiryNotificationTask(PeriodicTask):
@@ -52,10 +41,14 @@ class ExpiryNotificationTask(PeriodicTask):
         uow_factory: UnitOfWorkFactory,
         notifier: TelegramNotifier,
         settings: Settings,
+        translations: TranslationManager | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._notifier = notifier
         self._settings = settings
+        # Рассылка идёт каждому на его языке: получатель не выбирал
+        # момент уведомления и тем более не ждёт его по-русски.
+        self._translations = translations or TranslationManager.from_directory()
         self._horizon = timedelta(hours=settings.worker.expiry_notice_hours)
         self._batch_size = settings.worker.batch_size
         self.interval = float(settings.worker.expiry_check_interval)
@@ -92,7 +85,8 @@ class ExpiryNotificationTask(PeriodicTask):
                 continue
 
             result = await self._notifier.send(
-                user.telegram_id, self._build_text(subscription)
+                user.telegram_id,
+                self._build_text(subscription, Translator(self._translations, user.language)),
             )
             if result.delivered:
                 delivered += 1
@@ -114,12 +108,14 @@ class ExpiryNotificationTask(PeriodicTask):
         logger.info("Уведомления об окончании подписки: %s", result.describe())
         return result
 
-    def _build_text(self, subscription: Subscription) -> str:
+    def _build_text(self, subscription: Subscription, i18n: Translator) -> str:
         expires = subscription.expires_at.astimezone(
             self._settings.display_timezone
         ).strftime("%d.%m.%Y %H:%M")
-        return _EXPIRY_TEXT.format(
-            plan=escape(subscription.plan.value), expires=escape(expires)
+        return i18n(
+            "worker.expiry_notice",
+            plan=escape(subscription.plan.value),
+            expires=escape(expires),
         )
 
     async def _compensate(self, undelivered: list[int], blocked: list[int]) -> None:
@@ -150,10 +146,12 @@ class SubscriptionExpirationTask(PeriodicTask):
         uow_factory: UnitOfWorkFactory,
         notifier: TelegramNotifier,
         settings: Settings,
+        translations: TranslationManager | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._notifier = notifier
         self._settings = settings
+        self._translations = translations or TranslationManager.from_directory()
         self._batch_size = settings.worker.batch_size
         self.interval = float(settings.worker.expiration_check_interval)
 
@@ -182,7 +180,8 @@ class SubscriptionExpirationTask(PeriodicTask):
                 continue
 
             result = await self._notifier.send(
-                user.telegram_id, self._build_text(subscription)
+                user.telegram_id,
+                self._build_text(subscription, Translator(self._translations, user.language)),
             )
             if result.delivered:
                 delivered += 1
@@ -206,10 +205,12 @@ class SubscriptionExpirationTask(PeriodicTask):
         logger.info("Отзыв доступа по истёкшим подпискам: %s", result.describe())
         return result
 
-    def _build_text(self, subscription: Subscription) -> str:
+    def _build_text(self, subscription: Subscription, i18n: Translator) -> str:
         expires = subscription.expires_at.astimezone(
             self._settings.display_timezone
         ).strftime("%d.%m.%Y %H:%M")
-        return _EXPIRED_TEXT.format(
-            plan=escape(subscription.plan.value), expires=escape(expires)
+        return i18n(
+            "worker.expired",
+            plan=escape(subscription.plan.value),
+            expires=escape(expires),
         )
