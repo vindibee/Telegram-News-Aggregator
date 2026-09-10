@@ -23,12 +23,14 @@ from core.config import ConfigError, Settings, load_settings
 from core.logger import get_logger, setup_logging
 from db.database import Database, DatabaseNotReadyError
 from db.uow import UnitOfWorkFactory
+from services.i18n import TranslationManager
 from services.notifier import TelegramNotifier
 from services.ratelimit.base import RateLimitBackend
 from services.ratelimit.factory import build_backend
 from worker.runner import TaskRunner
 from worker.tasks import (
     ExpiryNotificationTask,
+    PublishScheduledPostsTask,
     StaleInvoiceCleanupTask,
     SubscriptionExpirationTask,
 )
@@ -39,15 +41,23 @@ logger = get_logger(__name__)
 def build_runner(
     settings: Settings,
     database: Database,
+    bot: Bot,
     notifier: TelegramNotifier,
 ) -> TaskRunner:
-    """Собирает планировщик со всеми задачами."""
+    """Собирает планировщик со всеми задачами.
+
+    Каталоги переводов загружаются один раз и передаются задачам:
+    уведомления уходят на языке получателя, а читать файлы в каждой
+    задаче отдельно незачем.
+    """
     uow_factory = UnitOfWorkFactory(database.session_factory)
+    translations = TranslationManager.from_directory()
     return TaskRunner(
         [
-            ExpiryNotificationTask(uow_factory, notifier, settings),
-            SubscriptionExpirationTask(uow_factory, notifier, settings),
+            ExpiryNotificationTask(uow_factory, notifier, settings, translations),
+            SubscriptionExpirationTask(uow_factory, notifier, settings, translations),
             StaleInvoiceCleanupTask(uow_factory, settings),
+            PublishScheduledPostsTask(uow_factory, bot, notifier, settings, translations),
         ]
     )
 
@@ -99,7 +109,7 @@ async def run() -> None:
         await database.dispose()
         raise
 
-    runner = build_runner(settings, database, notifier)
+    runner = build_runner(settings, database, bot, notifier)
     runner.schedule()
 
     try:

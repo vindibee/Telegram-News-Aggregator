@@ -14,9 +14,11 @@ from typing import Final
 
 from core.config import Settings
 from core.logger import get_logger
+from db.enums import ChannelKind
 from db.models import Subscription
 from db.uow import UnitOfWorkFactory
 from services.i18n import TranslationManager, Translator
+from tg_bot.keyboards import kb_renew
 from services.notifier import TelegramNotifier
 from worker.tasks.base import PeriodicTask, TaskResult
 
@@ -84,9 +86,14 @@ class ExpiryNotificationTask(PeriodicTask):
                 undelivered.append(subscription.id)
                 continue
 
+            i18n = Translator(self._translations, user.language)
             result = await self._notifier.send(
                 user.telegram_id,
-                self._build_text(subscription, Translator(self._translations, user.language)),
+                self._build_text(subscription, i18n),
+                # Уведомление без кнопки заставляет искать раздел оплаты
+                # вручную — ровно в тот момент, когда важна каждая секунда
+                # внимания пользователя.
+                reply_markup=kb_renew(i18n),
             )
             if result.delivered:
                 delivered += 1
@@ -165,6 +172,13 @@ class SubscriptionExpirationTask(PeriodicTask):
                 (subscription, await uow.users.get_by_id(subscription.user_id))
                 for subscription in expired
             ]
+            # Автопостинг — платная возможность, и с окончанием подписки он
+            # обязан прекращаться в той же транзакции, что и смена статуса.
+            # Отдельным шагом после уведомлений он продолжал бы работать всё
+            # время, пока идёт рассылка.
+            suspended = await self._suspend_publishing(
+                uow, [subscription.user_id for subscription in expired]
+            )
             await uow.commit()
 
         if not recipients:
@@ -179,9 +193,11 @@ class SubscriptionExpirationTask(PeriodicTask):
                 failed += 1
                 continue
 
+            i18n = Translator(self._translations, user.language)
             result = await self._notifier.send(
                 user.telegram_id,
-                self._build_text(subscription, Translator(self._translations, user.language)),
+                self._build_text(subscription, i18n),
+                reply_markup=kb_renew(i18n),
             )
             if result.delivered:
                 delivered += 1
@@ -200,10 +216,45 @@ class SubscriptionExpirationTask(PeriodicTask):
             processed=len(recipients),
             succeeded=delivered,
             failed=failed,
-            details={"blocked": len(blocked)},
+            details={"blocked": len(blocked), "suspended_channels": suspended},
         )
         logger.info("Отзыв доступа по истёкшим подпискам: %s", result.describe())
         return result
+
+    async def _suspend_publishing(self, uow: object, user_ids: list[int]) -> int:
+        """Отключает целевые каналы и снимает очередь публикаций.
+
+        Источники не трогаются: чтение новостей доступно и без подписки,
+        а пользователь, вернувшийся через месяц, не должен собирать список
+        каналов заново.
+
+        :param uow: Единица работы.
+        :param user_ids: Владельцы истёкших подписок.
+        :return: Сколько каналов отключено.
+        """
+        suspended = 0
+        for user_id in user_ids:
+            channels = await uow.channels.list_for_user(  # type: ignore[attr-defined]
+                user_id, ChannelKind.TARGET, only_active=True
+            )
+            for channel in channels:
+                await uow.channels.set_active(  # type: ignore[attr-defined]
+                    user_id, channel.id, active=False
+                )
+                suspended += 1
+
+            cancelled = await uow.scheduled.cancel_for_user(  # type: ignore[attr-defined]
+                user_id, "Подписка закончилась"
+            )
+            if cancelled:
+                logger.info(
+                    "Пользователь %s: отменено публикаций из-за окончания подписки: %d",
+                    user_id, cancelled,
+                )
+
+        if suspended:
+            logger.info("Отключено целевых каналов по истёкшим подпискам: %d", suspended)
+        return suspended
 
     def _build_text(self, subscription: Subscription, i18n: Translator) -> str:
         expires = subscription.expires_at.astimezone(

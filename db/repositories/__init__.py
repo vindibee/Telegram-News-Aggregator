@@ -11,6 +11,7 @@ from db.repositories.errors import (
 )
 from db.repositories.payment import PaymentCreateResult, PaymentRepository
 from db.repositories.post import PostData, PostRepository
+from db.repositories.schedule import ScheduledPostRepository
 from db.repositories.subscription import (
     GrantResult,
     SubscriptionCreateResult,
@@ -33,6 +34,7 @@ __all__ = [
     "PostData",
     "PostRepository",
     "RepositoryError",
+    "ScheduledPostRepository",
     "SubscriptionCreateResult",
     "SubscriptionRepository",
     "TrialClaimResult",

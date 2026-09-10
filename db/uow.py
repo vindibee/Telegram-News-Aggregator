@@ -26,6 +26,7 @@ from db.repositories.channel import ChannelRepository
 from db.repositories.keyword import KeywordRepository
 from db.repositories.payment import PaymentRepository
 from db.repositories.post import PostRepository
+from db.repositories.schedule import ScheduledPostRepository
 from db.repositories.subscription import SubscriptionRepository
 from db.repositories.user import UserRepository
 
@@ -59,6 +60,7 @@ class UnitOfWork:
         self._posts: PostRepository | None = None
         self._channels: ChannelRepository | None = None
         self._keywords: KeywordRepository | None = None
+        self._scheduled: ScheduledPostRepository | None = None
 
     # ------------------------------------------------------------- контекст
     async def __aenter__(self) -> Self:
@@ -70,6 +72,7 @@ class UnitOfWork:
         self._posts = PostRepository(self._session)
         self._channels = ChannelRepository(self._session)
         self._keywords = KeywordRepository(self._session)
+        self._scheduled = ScheduledPostRepository(self._session)
         return self
 
     async def __aexit__(
@@ -101,6 +104,7 @@ class UnitOfWork:
             self._posts = None
             self._channels = None
             self._keywords = None
+            self._scheduled = None
 
     @staticmethod
     def _has_pending_changes(session: AsyncSession) -> bool:
@@ -159,6 +163,13 @@ class UnitOfWork:
         self._require_session()
         assert self._keywords is not None  # noqa: S101
         return self._keywords
+
+    @property
+    def scheduled(self) -> ScheduledPostRepository:
+        """Репозиторий очереди отложенных публикаций."""
+        self._require_session()
+        assert self._scheduled is not None  # noqa: S101
+        return self._scheduled
 
     # ------------------------------------------------------------ управление
     async def commit(self) -> None:

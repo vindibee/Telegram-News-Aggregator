@@ -303,6 +303,20 @@ class ChannelRepository(BaseRepository[UserChannel]):
         await self._session.execute(stmt)
 
     @handle_db_errors
+    async def mark_published(self, channel_id: int, moment: datetime) -> None:
+        """Отмечает успешную публикацию в целевой канал.
+
+        :param channel_id: Идентификатор канала.
+        :param moment: Момент публикации (timezone-aware).
+        """
+        stmt = (
+            update(UserChannel)
+            .where(UserChannel.id == channel_id)
+            .values(last_published_at=moment, last_error=None, updated_at=func.now())
+        )
+        await self._session.execute(stmt)
+
+    @handle_db_errors
     async def mark_failed(self, channel_id: int, reason: str) -> None:
         """Сохраняет причину сбоя обработки канала.
 

@@ -405,3 +405,14 @@ def kb_cabinet_subscription(
     builder.button(text=i18n("buttons.cab_back"), callback_data=CabinetCB(section=SECTION_MENU))
     builder.adjust(1)
     return builder.as_markup()
+
+
+def kb_renew(i18n: Translator) -> InlineKeyboardMarkup:
+    """Клавиатура уведомления об окончании подписки.
+
+    Одна кнопка и ничего больше: уведомление приходит без спроса, и
+    единственное осмысленное действие в этот момент — продлить.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.button(text=i18n("buttons.extend"), callback_data=MenuCB(action=ACTION_PLANS))
+    return builder.as_markup()

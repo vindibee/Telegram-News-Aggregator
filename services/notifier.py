@@ -135,6 +135,16 @@ class TelegramNotifier:
 
         return DeliveryResult(telegram_id, DeliveryStatus.FAILED)
 
+    async def reserve_slot(self) -> None:
+        """Дожидается свободного жетона перед отправкой чужим кодом.
+
+        Нужен тем, кто обращается к Bot API мимо :meth:`send` — например,
+        публикатору, который копирует сообщения. Лимит исходящих
+        распространяется на бота целиком, поэтому ведро должно быть одно
+        на все отправки, а не своё у каждого места в коде.
+        """
+        await self._await_slot()
+
     async def _await_slot(self) -> None:
         """Дожидается свободного жетона в общем ведре исходящих сообщений.
 

@@ -270,6 +270,8 @@ class WorkerConfig:
     expiration_check_interval: int
     #: Как часто просрочивать неоплаченные счета, секунды.
     invoice_cleanup_interval: int
+    #: Как часто разбирать очередь отложенных публикаций, секунды.
+    publish_interval: int
     #: Сколько записей обрабатывать за один проход.
     batch_size: int
 
@@ -407,6 +409,7 @@ def load_settings() -> Settings:
         expiry_check_interval=_get_int("WORKER_EXPIRY_INTERVAL", 900, minimum=30),
         expiration_check_interval=_get_int("WORKER_EXPIRATION_INTERVAL", 300, minimum=30),
         invoice_cleanup_interval=_get_int("WORKER_INVOICE_INTERVAL", 600, minimum=30),
+        publish_interval=_get_int("WORKER_PUBLISH_INTERVAL", 30, minimum=5),
         batch_size=_get_int("WORKER_BATCH_SIZE", 100, minimum=1),
     )
 

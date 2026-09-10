@@ -61,6 +61,7 @@ from aiogram.types import (
     Contact,
     LabeledPrice,
     Message,
+    MessageId,
     PreCheckoutQuery,
     ResponseParameters,
     SuccessfulPayment,
@@ -634,6 +635,9 @@ class MockedSession(BaseSession):
             result = self._build_message(bot, method)
         elif TelegramUser in options:
             result = _bot_user()
+        elif MessageId in options:
+            self._message_id += 1
+            result = MessageId(message_id=self._message_id)
         elif bool in options:
             result = True
         else:
