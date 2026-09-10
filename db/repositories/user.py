@@ -63,7 +63,13 @@ class UserRepository(BaseRepository[User]):
     @handle_db_errors
     async def get_by_telegram_id_for_update(self, telegram_id: int) -> User | None:
         """То же, но с блокировкой строки до конца транзакции."""
-        stmt = select(User).where(User.telegram_id == telegram_id).with_for_update()
+        # См. пояснение в BaseRepository.get_for_update.
+        stmt = (
+            select(User)
+            .where(User.telegram_id == telegram_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
     @handle_db_errors

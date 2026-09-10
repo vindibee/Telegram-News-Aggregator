@@ -69,6 +69,9 @@ class PaymentRepository(BaseRepository[Payment]):
             select(Payment)
             .where(Payment.provider == provider, Payment.invoice_id == invoice_id)
             .with_for_update()
+            # См. пояснение в BaseRepository.get_for_update: блокирующее чтение
+            # обязано возвращать актуальные значения, а не кэш сессии.
+            .execution_options(populate_existing=True)
         )
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
@@ -183,6 +186,7 @@ class PaymentRepository(BaseRepository[Payment]):
         logger.info("Повторный запрос счёта по ключу %s вернул платёж id=%s", idempotency_key, existing.id)
         return PaymentCreateResult(payment=existing, created=False)
 
+    @handle_db_errors
     async def confirm_payment(
         self,
         *,
@@ -209,6 +213,8 @@ class PaymentRepository(BaseRepository[Payment]):
             если счёт не найден.
         :raises db.exceptions.InvalidStateTransitionError: Платёж находится
             в состоянии, из которого подтверждение невозможно.
+        :raises db.repositories.errors.ConflictError: Транзакция провайдера
+            уже привязана к другому счёту (уникальность ``external_id``).
         """
         # Лок по счёту берётся до чтения: он защищает и от гонки с
         # обработчиком отмены, который мог бы перевести счёт в expired.

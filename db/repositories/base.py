@@ -163,10 +163,15 @@ class BaseRepository(Generic[ModelT]):
         :param skip_locked: Не ждать освобождения, а вернуть ``None``.
         :return: Заблокированная запись или ``None``.
         """
+        # populate_existing: без него SQLAlchemy вернёт объект из identity map
+        # с теми значениями, что были прочитаны раньше в этой же транзакции,
+        # и блокировка потеряет смысл — «прочитать-изменить-записать» начнётся
+        # с устаревшего значения.
         stmt = (
             select(self.model)
             .where(self.model.id == entity_id)
             .with_for_update(skip_locked=skip_locked)
+            .execution_options(populate_existing=True)
         )
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()

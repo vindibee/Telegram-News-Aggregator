@@ -87,6 +87,8 @@ class SubscriptionRepository(BaseRepository[Subscription]):
                 Subscription.status.in_(_LIVE_STATUSES),
             )
             .with_for_update()
+            # См. пояснение в BaseRepository.get_for_update.
+            .execution_options(populate_existing=True)
         )
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
