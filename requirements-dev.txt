@@ -1,0 +1,13 @@
+-r requirements.txt
+
+# --- Тестовый стек ---
+# pytest-asyncio 1.4 требует pytest>=8.4, поэтому 8.x здесь не подойдёт.
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-mock==3.14.0
+pytest-cov==7.0.0
+freezegun==1.5.1
+
+# Redis-бэкенд ограничителя проверяется на настоящем протоколе:
+# fakeredis исполняет Lua-скрипты token bucket через lupa.
+fakeredis[lua]==2.26.2
