@@ -47,3 +47,6 @@ ACTION_PLANS = "plans"
 
 #: Действие «показать состояние подписки».
 ACTION_SUBSCRIPTION = "subscription"
+
+#: Действие «активировать пробный период».
+ACTION_TRIAL = "trial"

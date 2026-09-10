@@ -9,13 +9,14 @@ from typing import Any
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject
 
-from core.config import ParserConfig
+from core.config import ParserConfig, TrialConfig
 from core.logger import get_logger
 from db.uow import UnitOfWorkFactory
 from services.billing import BillingService
 from services.dedup import DedupConfig
 from services.news_service import NewsService
 from services.parser import TelegramWebParser
+from services.trial import TrialService
 
 logger = get_logger(__name__)
 
@@ -40,12 +41,14 @@ class DependenciesMiddleware(BaseMiddleware):
         parser_config: ParserConfig,
         invoice_ttl: timedelta,
         dedup_config: DedupConfig,
+        trial_config: TrialConfig,
     ) -> None:
         self._uow_factory = uow_factory
         self._parser = parser
         self._parser_config = parser_config
         self._invoice_ttl = invoice_ttl
         self._dedup_config = dedup_config
+        self._trial_config = trial_config
 
     async def __call__(
         self,
@@ -57,6 +60,7 @@ class DependenciesMiddleware(BaseMiddleware):
             data["uow"] = uow
             data["service"] = NewsService(uow, self._parser, self._parser_config, self._dedup_config)
             data["billing"] = BillingService(uow, invoice_ttl=self._invoice_ttl)
+            data["trial"] = TrialService(uow, self._trial_config)
             result = await handler(event, data)
             await uow.commit()
             return result

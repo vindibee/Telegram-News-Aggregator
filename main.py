@@ -117,6 +117,7 @@ def build_dispatcher(
             settings.parser,
             invoice_ttl=timedelta(minutes=settings.billing.invoice_ttl_minutes),
             dedup_config=build_dedup_config(settings),
+            trial_config=settings.trial,
         )
     )
     # Строго после зависимостей: регистрация пользователя работает в уже

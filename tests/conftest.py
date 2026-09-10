@@ -58,6 +58,7 @@ from aiogram.methods.base import Response, TelegramType
 from aiogram.types import (
     CallbackQuery,
     Chat,
+    Contact,
     LabeledPrice,
     Message,
     PreCheckoutQuery,
@@ -97,6 +98,7 @@ from services.parser import MediaItem, ParsedPost, TelegramWebParser
 from services.ratelimit.base import RateLimitRule
 from services.ratelimit.memory import InMemoryRateLimiter
 from services.ratelimit.policy import AntiFloodConfig, AntiFloodPolicy
+from services.trial import TrialService
 
 # --------------------------------------------------------------------------- #
 # Константы тестового окружения.
@@ -146,6 +148,10 @@ _TEST_ENVIRONMENT: Final[dict[str, str]] = {
     "RL_MUTE_LEVEL_TTL": "3600",
     "INVOICE_TTL_MINUTES": "15",
     "MAX_PENDING_INVOICES": "3",
+    "TRIAL_ENABLED": "true",
+    "TRIAL_DAYS": "7",
+    "TRIAL_REQUIRE_CONTACT": "true",
+    "TRIAL_FINGERPRINT_SECRET": "test-trial-secret",
     "WORKER_EXPIRY_NOTICE_HOURS": "24",
     "WORKER_EXPIRY_INTERVAL": "900",
     "WORKER_EXPIRATION_INTERVAL": "300",
@@ -1127,6 +1133,36 @@ def billing(uow: UnitOfWork, settings: Settings) -> BillingService:
         invoice_ttl=timedelta(minutes=settings.billing.invoice_ttl_minutes),
         max_pending=settings.billing.max_pending_invoices,
     )
+
+
+@pytest.fixture
+def trial(uow: UnitOfWork, settings: Settings) -> TrialService:
+    """Сервис пробного периода поверх транзакции теста."""
+    return TrialService(uow, settings.trial)
+
+
+@pytest.fixture
+def make_contact(telegram_user: TelegramUser) -> Callable[..., Contact]:
+    """Строит контакт, присланный кнопкой «Поделиться номером».
+
+    По умолчанию контакт принадлежит отправителю — именно так выглядит
+    ответ на ``request_contact``. Тест на чужой номер переопределяет
+    ``user_id``.
+    """
+
+    def _make(
+        phone_number: str = "+79001234567",
+        *,
+        user_id: int | None = TELEGRAM_ID,
+        first_name: str = "Тест",
+    ) -> Contact:
+        return Contact(
+            phone_number=phone_number,
+            first_name=first_name,
+            user_id=user_id,
+        )
+
+    return _make
 
 
 @pytest.fixture

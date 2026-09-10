@@ -13,7 +13,7 @@ from html import escape
 from aiogram import F, Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, LabeledPrice, Message, PreCheckoutQuery
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, LabeledPrice, Message, PreCheckoutQuery
 
 from core.config import Settings
 from core.logger import get_logger
@@ -21,6 +21,7 @@ from core.pricing import PLAN_OPTIONS
 from db.models import User
 from db.uow import UnitOfWork
 from services.billing import BillingError, BillingService
+from services.trial import TrialService
 from tg_bot.callbacks import ACTION_PLANS, ACTION_SUBSCRIPTION, MenuCB, PlanCB
 from tg_bot.flags import rate_limit, skip_throttling
 from tg_bot.keyboards import kb_after_payment, kb_plans, kb_subscription
@@ -60,10 +61,16 @@ async def show_plans(callback: CallbackQuery) -> None:
 
 
 @router.message(Command("subscription"))
-async def cmd_subscription(message: Message, user: User, uow: UnitOfWork, settings: Settings) -> None:
+async def cmd_subscription(
+    message: Message,
+    user: User,
+    uow: UnitOfWork,
+    settings: Settings,
+    trial: TrialService,
+) -> None:
     """Показывает состояние подписки командой."""
-    text, has_subscription = await _describe_subscription(user, uow, settings)
-    await message.answer(text, reply_markup=kb_subscription(has_subscription))
+    text, markup = await _subscription_screen(user, uow, settings, trial)
+    await message.answer(text, reply_markup=markup)
 
 
 @router.callback_query(MenuCB.filter(F.action == ACTION_SUBSCRIPTION))
@@ -72,14 +79,15 @@ async def show_subscription(
     user: User,
     uow: UnitOfWork,
     settings: Settings,
+    trial: TrialService,
 ) -> None:
     """Показывает состояние подписки по кнопке."""
     await callback.answer()
     target = get_message(callback)
     if target is None:
         return
-    text, has_subscription = await _describe_subscription(user, uow, settings)
-    await safe_edit_text(target, text, kb_subscription(has_subscription))
+    text, markup = await _subscription_screen(user, uow, settings, trial)
+    await safe_edit_text(target, text, markup)
 
 
 # Выставление счёта обращается к Bot API и создаёт строку в БД, поэтому
@@ -202,6 +210,29 @@ async def process_successful_payment(
         f"Подписка активна до: <b>{escape(expires)}</b>",
         reply_markup=kb_after_payment(),
     )
+
+
+async def _subscription_screen(
+    user: User,
+    uow: UnitOfWork,
+    settings: Settings,
+    trial: TrialService,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Собирает экран подписки вместе с клавиатурой.
+
+    Доступность триала спрашивается здесь, а не в клавиатуре: обращение к
+    базе из функции сборки разметки спрятало бы запрос в неожиданном месте.
+
+    :return: Пара «текст сообщения, клавиатура».
+    """
+    text, has_subscription = await _describe_subscription(user, uow, settings)
+    eligibility = await trial.check_eligibility(user)
+    markup = kb_subscription(
+        has_subscription,
+        trial_available=eligibility.available,
+        trial_days=trial.days,
+    )
+    return text, markup
 
 
 async def _describe_subscription(

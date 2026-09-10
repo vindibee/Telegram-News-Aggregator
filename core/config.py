@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from datetime import timezone, tzinfo
+from datetime import timedelta, timezone, tzinfo
 from typing import Final
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -194,6 +194,31 @@ class BillingConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class TrialConfig:
+    """Параметры пробного периода.
+
+    ``fingerprint_secret`` — серверный секрет для HMAC отпечатков. Он не
+    имеет значения по умолчанию сознательно: без секрета множество
+    телефонных номеров перебирается целиком за считанные минуты, и защита
+    от мультиаккаунтов превращается в декорацию.
+
+    Секрет нельзя менять после запуска: отпечатки, посчитанные со старым
+    ключом, не совпадут с новыми, и каждый пользователь получит право на
+    ещё один триал.
+    """
+
+    enabled: bool
+    days: int
+    require_contact: bool
+    fingerprint_secret: str
+
+    @property
+    def period(self) -> timedelta:
+        """Длительность пробного периода."""
+        return timedelta(days=self.days)
+
+
+@dataclass(frozen=True, slots=True)
 class DedupConfigValues:
     """Параметры дедупликации новостей (сырые значения из окружения)."""
 
@@ -243,6 +268,7 @@ class Settings:
     rate_limit: RateLimitConfig
     billing: BillingConfig
     worker: WorkerConfig
+    trial: TrialConfig
     dedup: DedupConfigValues
     channels: tuple[Channel, ...] = field(default_factory=tuple)
 
@@ -346,6 +372,23 @@ def load_settings() -> Settings:
         batch_size=_get_int("WORKER_BATCH_SIZE", 100, minimum=1),
     )
 
+    trial = TrialConfig(
+        enabled=_get_bool("TRIAL_ENABLED", True),
+        days=_get_int("TRIAL_DAYS", 7, minimum=1),
+        require_contact=_get_bool("TRIAL_REQUIRE_CONTACT", True),
+        fingerprint_secret=_get_str("TRIAL_FINGERPRINT_SECRET"),
+    )
+    if trial.enabled and trial.require_contact and not trial.fingerprint_secret:
+        # Ошибка конфигурации, а не «тихий» слабый дефолт: неотличимый от
+        # рабочего запуск с предсказуемым секретом означал бы, что защита
+        # от мультиаккаунтов не работает, и узнать об этом было бы неоткуда.
+        raise ConfigError(
+            "TRIAL_FINGERPRINT_SECRET не задан, а пробный период требует подтверждения "
+            "телефона. Сгенерируйте секрет (python -c \"import secrets; "
+            "print(secrets.token_urlsafe(32))\") или отключите проверку "
+            "через TRIAL_REQUIRE_CONTACT=false."
+        )
+
     dedup = DedupConfigValues(
         enabled=_get_bool("DEDUP_ENABLED", True),
         # Фильтр с высокой полнотой: настоящие перепечатки дают 0..8,
@@ -368,6 +411,7 @@ def load_settings() -> Settings:
         rate_limit=rate_limit,
         billing=billing,
         worker=worker,
+        trial=trial,
         dedup=dedup,
         channels=CHANNELS,
     )

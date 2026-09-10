@@ -5,7 +5,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import tzinfo
 
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.config import MAX_BUTTON_TEXT_LENGTH, Channel
@@ -15,6 +20,7 @@ from tg_bot.callbacks import (
     ACTION_CHANNELS,
     ACTION_PLANS,
     ACTION_SUBSCRIPTION,
+    ACTION_TRIAL,
     ChannelCB,
     MenuCB,
     PlanCB,
@@ -88,14 +94,71 @@ def kb_plans(options: Sequence[PlanOption]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def kb_subscription(has_subscription: bool) -> InlineKeyboardMarkup:
-    """Клавиатура экрана подписки."""
+def kb_subscription(
+    has_subscription: bool,
+    *,
+    trial_available: bool = False,
+    trial_days: int = 0,
+) -> InlineKeyboardMarkup:
+    """Клавиатура экрана подписки.
+
+    Кнопка триала показывается только когда он действительно доступен:
+    предлагать бесплатный период тому, кто его уже использовал, — верный
+    способ получить отказ в ответ на собственное предложение.
+    """
     builder = InlineKeyboardBuilder()
+    if trial_available:
+        builder.button(
+            text=f"🎁 Пробный период на {trial_days} дн.",
+            callback_data=MenuCB(action=ACTION_TRIAL),
+        )
     builder.button(
         text="⭐ Продлить" if has_subscription else "⭐ Оформить подписку",
         callback_data=MenuCB(action=ACTION_PLANS),
     )
     builder.button(text="📡 К каналам", callback_data=MenuCB(action=ACTION_CHANNELS))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def kb_request_contact(prompt: str = "📱 Поделиться номером") -> ReplyKeyboardMarkup:
+    """Клавиатура запроса телефона.
+
+    Это единственный способ получить номер, подтверждённый самим Telegram:
+    введённый вручную текст ничего не доказывает, а контакт из адресной
+    книги принадлежит другому человеку.
+
+    ``one_time_keyboard`` не отменяет необходимости убирать клавиатуру
+    явно: флаг лишь сворачивает её на клиенте, а не снимает.
+    """
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=prompt, request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+        input_field_placeholder="Нажмите кнопку ниже",
+        selective=True,
+    )
+
+
+def kb_hide_contact_request() -> ReplyKeyboardRemove:
+    """Убирает клавиатуру запроса телефона."""
+    return ReplyKeyboardRemove()
+
+
+def kb_trial_declined() -> InlineKeyboardMarkup:
+    """Клавиатура после отказа от подтверждения телефона."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⭐ Оформить подписку", callback_data=MenuCB(action=ACTION_PLANS))
+    builder.button(text="📡 К каналам", callback_data=MenuCB(action=ACTION_CHANNELS))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def kb_after_trial() -> InlineKeyboardMarkup:
+    """Клавиатура после успешной активации пробного периода."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📡 К каналам", callback_data=MenuCB(action=ACTION_CHANNELS))
+    builder.button(text="💳 Моя подписка", callback_data=MenuCB(action=ACTION_SUBSCRIPTION))
     builder.adjust(1)
     return builder.as_markup()
 
