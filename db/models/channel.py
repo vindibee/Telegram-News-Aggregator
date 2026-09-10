@@ -75,9 +75,11 @@ class UserChannel(Base, IdMixin, TimestampMixin):
         Boolean, nullable=False, default=True, server_default="true"
     )
 
-    #: Проверено ли право бота публиковать. Для источников не применимо и
-    #: остаётся ложью.
-    is_verified: Mapped[bool] = mapped_column(
+    #: Подтверждено ли, что бот администратор целевого канала. Право
+    #: проверяется обращением к Bot API и кэшируется здесь: спрашивать его
+    #: перед каждой публикацией — лишний round-trip на каждый пост.
+    #: Для источников не применимо и остаётся ложью.
+    bot_is_admin: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
 
@@ -137,7 +139,7 @@ class UserChannel(Base, IdMixin, TimestampMixin):
         return (
             self.kind is ChannelKind.TARGET
             and self.is_active
-            and self.is_verified
+            and self.bot_is_admin
             and self.chat_id is not None
         )
 

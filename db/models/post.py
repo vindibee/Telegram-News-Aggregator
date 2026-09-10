@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from sqlalchemy import (
     BigInteger,
@@ -25,6 +25,9 @@ from core.logger import get_logger
 from db.base import Base
 from db.enums import PostStatus, pg_enum
 from db.mixins import IdMixin, TimestampMixin
+
+if TYPE_CHECKING:
+    from db.models.channel import UserChannel
 
 logger = get_logger(__name__)
 
@@ -49,6 +52,15 @@ class Post(Base, IdMixin, TimestampMixin):
     __tablename__ = "posts"
 
     channel_name: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    #: Канал-источник конкретного пользователя, если пост пришёл оттуда.
+    #: Необязательное: посты из общего белого списка каналов никому не
+    #: принадлежат, а связывать их с чужой подпиской было бы неверно.
+    source_channel_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("user_channels.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     post_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
@@ -95,6 +107,10 @@ class Post(Base, IdMixin, TimestampMixin):
         nullable=False,
     )
 
+    source_channel: Mapped["UserChannel | None"] = relationship(
+        "UserChannel",
+        lazy="raise",
+    )
     duplicate_of: Mapped[Post | None] = relationship(
         "Post",
         remote_side="Post.id",
@@ -117,6 +133,11 @@ class Post(Base, IdMixin, TimestampMixin):
         Index("ix_posts_search_vector", "search_vector", postgresql_using="gin"),
         Index("ix_posts_content_hash", "content_hash"),
         Index("ix_posts_duplicate_of_id", "duplicate_of_id"),
+        Index(
+            "ix_posts_source_channel_id",
+            "source_channel_id",
+            postgresql_where=text("source_channel_id IS NOT NULL"),
+        ),
         Index("ix_posts_status_post_time", "status", post_time.desc()),
         # Частичные индексы: band-колонки заполнены только у постов с текстом,
         # и индексировать NULL-строки смысла нет.

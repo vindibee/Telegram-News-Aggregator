@@ -30,9 +30,11 @@ from db.mixins import IdMixin, TimestampMixin
 
 if TYPE_CHECKING:
     from db.models.channel import UserChannel
+    from db.models.keyword import UserKeyword
     from db.models.payment import Payment
     from db.models.promo import PromocodeRedemption
     from db.models.referral import Referral
+    from db.models.schedule import ScheduledPost
     from db.models.subscription import Subscription
     from db.models.tracking import TrackedLink
 
@@ -115,6 +117,18 @@ class User(Base, IdMixin, TimestampMixin):
     )
     channels: Mapped[list[UserChannel]] = relationship(
         "UserChannel",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="raise",
+    )
+    keywords: Mapped[list[UserKeyword]] = relationship(
+        "UserKeyword",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="raise",
+    )
+    scheduled_posts: Mapped[list[ScheduledPost]] = relationship(
+        "ScheduledPost",
         back_populates="user",
         cascade="all, delete-orphan",
         lazy="raise",

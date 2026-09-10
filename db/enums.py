@@ -65,6 +65,29 @@ class ChannelKind(StrEnum):
     TARGET = "target"
 
 
+class KeywordKind(StrEnum):
+    """Роль ключевого слова в фильтре пользователя.
+
+    Триггеры и стоп-слова хранятся вместе, потому что различаются ровно
+    одним значением, а обрабатываются одним запросом: разделять их на две
+    таблицы значило бы дублировать индексы ради одного бита.
+    """
+
+    #: Новость интересна, если встречается хотя бы одно такое слово.
+    TRIGGER = "trigger"
+    #: Новость отбрасывается, если встречается хотя бы одно такое слово.
+    STOP = "stop"
+
+
+class ScheduledPostStatus(StrEnum):
+    """Состояние отложенной публикации."""
+
+    PENDING = "pending"
+    PUBLISHED = "published"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class ReferralStatus(StrEnum):
     """Состояние реферального начисления.
 
@@ -194,6 +217,11 @@ def pg_enum(enum_cls: type[StrEnum], name: str) -> SAEnum:
 #: Терминальные состояния платежа — из них переходы запрещены.
 FINAL_PAYMENT_STATUSES: Final[frozenset[PaymentStatus]] = frozenset(
     {PaymentStatus.SUCCEEDED, PaymentStatus.FAILED, PaymentStatus.REFUNDED, PaymentStatus.EXPIRED}
+)
+
+#: Состояния публикации, из которых переходы запрещены.
+FINAL_SCHEDULED_STATUSES: Final[frozenset[ScheduledPostStatus]] = frozenset(
+    {ScheduledPostStatus.PUBLISHED, ScheduledPostStatus.CANCELLED}
 )
 
 #: Состояния реферала, из которых повторное начисление невозможно.

@@ -145,14 +145,14 @@ def test_channel_display_name_falls_back_from_title_to_username_to_id() -> None:
 
 def test_channel_is_publishable_only_for_verified_active_target() -> None:
     target = _channel(
-        1, kind=ChannelKind.TARGET, chat_id=-100500, is_verified=True, is_active=True
+        1, kind=ChannelKind.TARGET, chat_id=-100500, bot_is_admin=True, is_active=True
     )
     assert target.is_publishable, "Проверенная активная цель должна быть готова к публикации"
 
     assert not _channel(1, kind=ChannelKind.SOURCE, chat_id=-1).is_publishable, (
         "Источник не является целью публикации"
     )
-    target.is_verified = False
+    target.bot_is_admin = False
     assert not target.is_publishable, "Без подтверждения прав публиковать нельзя"
 
 
