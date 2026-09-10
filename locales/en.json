@@ -19,7 +19,20 @@
     "language": "🌐 Language",
     "language_ru": "🇷🇺 Русский",
     "language_en": "🇬🇧 English",
-    "language_uk": "🇺🇦 Українська"
+    "language_uk": "🇺🇦 Українська",
+    "cabinet": "⚙️ Dashboard",
+    "cab_sources": "📥 My sources",
+    "cab_targets": "📤 Auto-posting channels",
+    "cab_keywords": "🔤 Word filter",
+    "cab_subscription": "💳 Subscription status",
+    "cab_back": "◀️ Dashboard",
+    "add_source": "➕ Add source",
+    "add_target": "➕ Add channel",
+    "add_triggers": "➕ Triggers",
+    "add_stop_words": "➕ Stop words",
+    "clear_triggers": "🗑 Clear triggers",
+    "clear_stop_words": "🗑 Clear stop words",
+    "recheck": "🔄 Check permissions"
   },
   "units": {
     "days": {
@@ -135,5 +148,59 @@
   "worker": {
     "expiry_notice": "⏳ <b>Your subscription ends soon</b>\n\nPlan: <b>{plan}</b>\nValid until: <b>{expires}</b>\n\nExtend it so you do not lose access.",
     "expired": "🔒 <b>Subscription ended</b>\n\nPlan <b>{plan}</b> expired on {expires}.\n\nSubscribe again to restore access."
+  },
+  "cabinet": {
+    "menu": "⚙️ <b>Dashboard</b>\n\nSources: <b>{sources}</b>\nAuto-posting channels: <b>{targets}</b>\nFilter words: <b>{keywords}</b>",
+    "sources": {
+      "title": "📥 <b>My sources</b>\n\nThis is where I take news from.",
+      "empty": "📥 <b>My sources</b>\n\nNone yet. Add the first one — send a channel link.",
+      "prompt": "Send a channel link or its name: <code>@channel</code>, <code>t.me/channel</code> or just <code>channel</code>.\n\nCancel — /cancel.",
+      "checking": "🔍 Checking the channel…",
+      "added": "✅ Channel <b>@{channel}</b> connected as a source.",
+      "exists": "ℹ️ Channel <b>@{channel}</b> is already connected.",
+      "removed": "🗑 Source disconnected.",
+      "limit": "Limit reached: {limit}. Disconnect one channel to add another.",
+      "invalid": "❌ That does not look like a Telegram channel. Expected 5–32 characters: latin letters, digits and underscore.",
+      "unavailable": "❌ Channel <b>@{channel}</b> is unavailable: it is private, missing or has no web preview.",
+      "network": "❌ Could not reach Telegram. Try again in a minute."
+    },
+    "targets": {
+      "title": "📤 <b>Auto-posting channels</b>\n\nThis is where I publish selected news.",
+      "empty": "📤 <b>Auto-posting channels</b>\n\nNone yet. Add a channel where the bot is an administrator.",
+      "prompt": "Make the bot an administrator with posting rights, then send the channel name <code>@channel</code> or forward any message from it here.\n\nCancel — /cancel.",
+      "checking": "🔍 Checking permissions…",
+      "added": "✅ Channel <b>{channel}</b> connected for auto-posting.",
+      "exists": "ℹ️ Channel <b>{channel}</b> is already connected.",
+      "removed": "🗑 Channel disconnected.",
+      "limit": "Limit reached: {limit}. Disconnect one channel to add another.",
+      "not_found": "❌ Channel not found. Check the name or forward a message from it.",
+      "not_admin": "❌ The bot is not an administrator of <b>{channel}</b>. Add it and try again.",
+      "cannot_post": "❌ The bot cannot post in <b>{channel}</b>. Enable that right in the administrator settings.",
+      "not_a_channel": "❌ This is not a channel. Auto-posting works with channels only.",
+      "verified": "✅ Permissions confirmed.",
+      "status_ok": "✅ ready to publish",
+      "status_no_rights": "⚠️ no rights"
+    },
+    "keywords": {
+      "title": "🔤 <b>Word filter</b>\n\nTriggers let a post through, stop words drop it.",
+      "triggers": "✅ <b>Triggers</b> ({count}): {words}",
+      "stop_words": "🚫 <b>Stop words</b> ({count}): {words}",
+      "none": "—",
+      "prompt_triggers": "Send trigger words separated by commas.\n\nExample: <code>python, machine learning, release</code>\n\nCancel — /cancel.",
+      "prompt_stop": "Send stop words separated by commas.\n\nExample: <code>ads, giveaway</code>\n\nCancel — /cancel.",
+      "added": "✅ Added: {words}",
+      "skipped": "ℹ️ Already on the list: {words}",
+      "nothing_added": "ℹ️ Every word you sent is already in the filter.",
+      "cleared": "🗑 Rules removed: {count}.",
+      "empty_input": "❌ I see no words. Send them separated by commas.",
+      "too_long": "❌ A word is longer than {limit} characters: <code>{word}</code>",
+      "limit": "Limit reached: {limit} words. Clear the list to add new ones."
+    },
+    "subscription": {
+      "trial": "🎁 <b>Free trial</b>\n\nRemaining: <b>{left}</b>\nValid until: <b>{expires}</b>",
+      "active": "💳 <b>{plan} subscription</b>\n\nRemaining: <b>{left}</b>\nValid until: <b>{expires}</b>",
+      "none": "💳 <b>No active subscription</b>\n\nSubscribe or activate the free trial."
+    },
+    "cancelled": "Cancelled."
   }
 }

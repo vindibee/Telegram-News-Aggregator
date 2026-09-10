@@ -22,16 +22,29 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.config import MAX_BUTTON_TEXT_LENGTH, Channel
 from core.pricing import PlanOption
-from db.enums import Language
-from db.models import Post
+from db.enums import KeywordKind, Language
+from db.models import Post, UserChannel
 from services.i18n import Translator
 from tg_bot.callbacks import (
+    ACTION_CABINET,
     ACTION_CHANNELS,
     ACTION_LANGUAGE,
     ACTION_PLANS,
     ACTION_SUBSCRIPTION,
     ACTION_TRIAL,
+    CHANNEL_DELETE,
+    CHANNEL_VERIFY,
+    KEYWORD_ADD,
+    KEYWORD_CLEAR,
+    SECTION_KEYWORDS,
+    SECTION_MENU,
+    SECTION_SOURCES,
+    SECTION_SUBSCRIPTION,
+    SECTION_TARGETS,
+    CabinetCB,
+    ChannelActionCB,
     ChannelCB,
+    KeywordActionCB,
     LanguageCB,
     MenuCB,
     PlanCB,
@@ -59,9 +72,13 @@ def kb_channels(channels: Sequence[Channel], i18n: Translator) -> InlineKeyboard
     # быть заметной, а не теряться среди названий каналов.
     builder.row(
         InlineKeyboardButton(
+            text=i18n("buttons.cabinet"),
+            callback_data=MenuCB(action=ACTION_CABINET).pack(),
+        ),
+        InlineKeyboardButton(
             text=i18n("buttons.language"),
             callback_data=MenuCB(action=ACTION_LANGUAGE).pack(),
-        )
+        ),
     )
     return builder.as_markup()
 
@@ -222,5 +239,127 @@ def kb_languages(current: Language, i18n: Translator) -> InlineKeyboardMarkup:
             callback_data=LanguageCB(code=language.value),
         )
     builder.button(text=i18n("buttons.channels"), callback_data=MenuCB(action=ACTION_CHANNELS))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def kb_cabinet(i18n: Translator) -> InlineKeyboardMarkup:
+    """Главное меню личного кабинета."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text=i18n("buttons.cab_sources"), callback_data=CabinetCB(section=SECTION_SOURCES))
+    builder.button(text=i18n("buttons.cab_targets"), callback_data=CabinetCB(section=SECTION_TARGETS))
+    builder.button(text=i18n("buttons.cab_keywords"), callback_data=CabinetCB(section=SECTION_KEYWORDS))
+    builder.button(
+        text=i18n("buttons.cab_subscription"), callback_data=CabinetCB(section=SECTION_SUBSCRIPTION)
+    )
+    builder.button(text=i18n("buttons.channels"), callback_data=MenuCB(action=ACTION_CHANNELS))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def kb_channel_list(
+    channels: Sequence[UserChannel],
+    i18n: Translator,
+    *,
+    add_button: str,
+    show_status: bool = False,
+) -> InlineKeyboardMarkup:
+    """Список подключённых каналов с кнопками удаления.
+
+    Каждая строка — сам канал и корзина рядом. Отдельный экран «выберите,
+    что удалить» стоил бы лишнего шага в самом частом действии раздела.
+
+    :param channels: Подключённые каналы.
+    :param i18n: Локализатор.
+    :param add_button: Ключ подписи кнопки добавления.
+    :param show_status: Показывать ли готовность к публикации.
+    """
+    builder = InlineKeyboardBuilder()
+
+    for channel in channels:
+        label = channel.display_name
+        if show_status:
+            status = (
+                i18n("cabinet.targets.status_ok")
+                if channel.bot_is_admin
+                else i18n("cabinet.targets.status_no_rights")
+            )
+            label = f"{label} · {status}"
+        builder.row(
+            InlineKeyboardButton(
+                text=shorten(label, MAX_BUTTON_TEXT_LENGTH - 4),
+                callback_data=ChannelActionCB(action=CHANNEL_VERIFY, channel_id=channel.id).pack(),
+            ),
+            InlineKeyboardButton(
+                text="🗑",
+                callback_data=ChannelActionCB(action=CHANNEL_DELETE, channel_id=channel.id).pack(),
+            ),
+        )
+
+    builder.row(
+        InlineKeyboardButton(
+            text=i18n(add_button),
+            callback_data=CabinetCB(section=SECTION_SOURCES if not show_status else SECTION_TARGETS).pack(),
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=i18n("buttons.cab_back"),
+            callback_data=CabinetCB(section=SECTION_MENU).pack(),
+        )
+    )
+    return builder.as_markup()
+
+
+def kb_keywords(i18n: Translator) -> InlineKeyboardMarkup:
+    """Клавиатура раздела словесного фильтра."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=i18n("buttons.add_triggers"),
+        callback_data=KeywordActionCB(action=KEYWORD_ADD, kind=KeywordKind.TRIGGER.value),
+    )
+    builder.button(
+        text=i18n("buttons.add_stop_words"),
+        callback_data=KeywordActionCB(action=KEYWORD_ADD, kind=KeywordKind.STOP.value),
+    )
+    builder.button(
+        text=i18n("buttons.clear_triggers"),
+        callback_data=KeywordActionCB(action=KEYWORD_CLEAR, kind=KeywordKind.TRIGGER.value),
+    )
+    builder.button(
+        text=i18n("buttons.clear_stop_words"),
+        callback_data=KeywordActionCB(action=KEYWORD_CLEAR, kind=KeywordKind.STOP.value),
+    )
+    builder.button(text=i18n("buttons.cab_back"), callback_data=CabinetCB(section=SECTION_MENU))
+    builder.adjust(2, 2, 1)
+    return builder.as_markup()
+
+
+def kb_cabinet_back(i18n: Translator) -> InlineKeyboardMarkup:
+    """Клавиатура из одной кнопки возврата в кабинет."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text=i18n("buttons.cab_back"), callback_data=CabinetCB(section=SECTION_MENU))
+    return builder.as_markup()
+
+
+def kb_cabinet_subscription(
+    has_subscription: bool,
+    i18n: Translator,
+    *,
+    trial_available: bool = False,
+    trial_days: int = 0,
+) -> InlineKeyboardMarkup:
+    """Клавиатура раздела подписки внутри кабинета."""
+    builder = InlineKeyboardBuilder()
+    if trial_available:
+        builder.button(
+            text=i18n("buttons.trial", days=i18n.plural("units.days", trial_days)),
+            callback_data=MenuCB(action=ACTION_TRIAL),
+        )
+    builder.button(
+        text=i18n("buttons.extend") if has_subscription else i18n("buttons.buy"),
+        callback_data=MenuCB(action=ACTION_PLANS),
+    )
+    builder.button(text=i18n("buttons.cab_back"), callback_data=CabinetCB(section=SECTION_MENU))
     builder.adjust(1)
     return builder.as_markup()

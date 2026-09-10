@@ -58,6 +58,9 @@ class DependenciesMiddleware(BaseMiddleware):
     ) -> Any:
         async with self._uow_factory() as uow:
             data["uow"] = uow
+            # Парсер отдаётся хендлерам напрямую: личному кабинету он нужен
+            # для проверки канала до того, как появится что показывать.
+            data["parser"] = self._parser
             data["service"] = NewsService(uow, self._parser, self._parser_config, self._dedup_config)
             data["billing"] = BillingService(uow, invoice_ttl=self._invoice_ttl)
             data["trial"] = TrialService(uow, self._trial_config)

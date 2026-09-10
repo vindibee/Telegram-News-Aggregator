@@ -39,6 +39,26 @@ class PlanCB(CallbackData, prefix="plan"):
     option_id: str
 
 
+class CabinetCB(CallbackData, prefix="cab"):
+    """Навигация по разделам личного кабинета."""
+
+    section: str
+
+
+class ChannelActionCB(CallbackData, prefix="chan"):
+    """Действие над подключённым каналом."""
+
+    action: str
+    channel_id: int
+
+
+class KeywordActionCB(CallbackData, prefix="kw"):
+    """Действие над словесным фильтром."""
+
+    action: str
+    kind: str
+
+
 class LanguageCB(CallbackData, prefix="lang"):
     """Выбрать язык интерфейса."""
 
@@ -59,3 +79,22 @@ ACTION_TRIAL = "trial"
 
 #: Действие «показать выбор языка».
 ACTION_LANGUAGE = "language"
+
+#: Действие «открыть личный кабинет».
+ACTION_CABINET = "cabinet"
+
+#: Разделы личного кабинета.
+SECTION_MENU = "menu"
+SECTION_SOURCES = "sources"
+SECTION_TARGETS = "targets"
+SECTION_KEYWORDS = "keywords"
+SECTION_SUBSCRIPTION = "subscription"
+
+#: Действия над каналом.
+CHANNEL_ADD = "add"
+CHANNEL_DELETE = "del"
+CHANNEL_VERIFY = "check"
+
+#: Действия над фильтром.
+KEYWORD_ADD = "add"
+KEYWORD_CLEAR = "clear"

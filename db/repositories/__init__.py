@@ -2,6 +2,7 @@
 
 from db.repositories.base import BaseRepository, handle_db_errors, run_with_retry
 from db.repositories.channel import ChannelCreateResult, ChannelRepository
+from db.repositories.keyword import KeywordAddResult, KeywordRepository
 from db.repositories.errors import (
     ConcurrencyError,
     ConflictError,
@@ -24,6 +25,8 @@ __all__ = [
     "ConcurrencyError",
     "ConflictError",
     "EntityNotFoundError",
+    "KeywordAddResult",
+    "KeywordRepository",
     "GrantResult",
     "PaymentCreateResult",
     "PaymentRepository",

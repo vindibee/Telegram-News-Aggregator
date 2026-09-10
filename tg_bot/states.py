@@ -19,6 +19,30 @@ class LanguageStates(StatesGroup):
     choosing = State()
 
 
+class AddSourceChannelSG(StatesGroup):
+    """Подключение канала-источника."""
+
+    #: Ждём ссылку или имя канала.
+    waiting_for_link = State()
+
+
+class AddTargetChannelSG(StatesGroup):
+    """Привязка канала для автопостинга."""
+
+    #: Ждём имя канала или пересланное из него сообщение.
+    waiting_for_channel = State()
+
+
+class SetKeywordsSG(StatesGroup):
+    """Настройка словесного фильтра."""
+
+    #: Ждём триггерные слова через запятую.
+    waiting_for_triggers = State()
+
+    #: Ждём стоп-слова через запятую.
+    waiting_for_stop_words = State()
+
+
 class TrialStates(StatesGroup):
     """Активация пробного периода."""
 
