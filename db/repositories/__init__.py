@@ -12,6 +12,12 @@ from db.repositories.errors import (
 from db.repositories.payment import PaymentCreateResult, PaymentRepository
 from db.repositories.post import PostData, PostRepository
 from db.repositories.schedule import ScheduledPostRepository
+from db.repositories.tracking import (
+    ClickEvent,
+    LinkStats,
+    OwnerTotals,
+    TrackedLinkRepository,
+)
 from db.repositories.subscription import (
     GrantResult,
     SubscriptionCreateResult,
@@ -21,6 +27,10 @@ from db.repositories.user import TrialClaimResult, UserRepository, UserUpsertRes
 
 __all__ = [
     "BaseRepository",
+    "ClickEvent",
+    "LinkStats",
+    "OwnerTotals",
+    "TrackedLinkRepository",
     "ChannelCreateResult",
     "ChannelRepository",
     "ConcurrencyError",

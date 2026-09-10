@@ -27,6 +27,7 @@ from services.dedup import DedupConfig
 from services.dedup_index import DedupIndex, build_dedup_index
 from services.media import MediaDownloader
 from services.notifier import TelegramNotifier
+from services.tracker import ClickCounter
 from services.parser import TelegramWebParser
 from services.ratelimit.base import RateLimitBackend
 from services.i18n import LanguageCache, TranslationManager, build_language_cache
@@ -42,6 +43,7 @@ from tg_bot.middlewares import (
 )
 from tg_bot.views import PostRenderer
 from web import build_web_app, start_web_app
+from web.redirect_app import setup_redirect_routes
 
 logger = get_logger(__name__)
 
@@ -78,6 +80,21 @@ def build_dedup_config(settings: Settings) -> DedupConfig:
         lookback_hours=values.lookback_hours,
         candidate_limit=values.candidate_limit,
     )
+
+
+def _build_redis_client(settings: Settings) -> object | None:
+    """Создаёт клиент Redis для очереди переходов.
+
+    Отдельный клиент, а не общий с ограничителем частоты: очередь
+    переходов может расти пачками, и делить с ней пул соединений
+    анти-флуда, от которого зависит отзывчивость бота, не стоит.
+    """
+    if not settings.redis.enabled:
+        return None
+
+    from redis.asyncio import Redis
+
+    return Redis.from_url(settings.redis.url, decode_responses=True)
 
 
 def build_crypto_client(
@@ -210,6 +227,7 @@ async def run() -> None:
     translations = TranslationManager.from_directory()
     language_cache = build_language_cache(settings.redis)
     dedup_index = build_dedup_index(settings.redis, settings.dedup.lookback_hours)
+    click_counter = ClickCounter(_build_redis_client(settings), prefix=settings.redis.prefix)
     crypto_client = build_crypto_client(settings, http_session)
 
     try:
@@ -233,18 +251,25 @@ async def run() -> None:
             crypto_client,
         )
 
-        # Приёмник вебхуков поднимается только когда криптооплата
-        # настроена: открывать порт «на всякий случай» незачем.
-        if crypto_client is not None:
-            web_runner = await start_web_app(
-                build_web_app(
-                    settings=settings,
-                    uow_factory=UnitOfWorkFactory(database.session_factory),
-                    notifier=TelegramNotifier(bot, limiter),
-                    translations=translations,
-                ),
-                settings.crypto,
+        # HTTP-сервер поднимается, если он кому-то нужен: приёмнику
+        # вебхуков оплаты или редиректу коротких ссылок. Открывать порт
+        # «на всякий случай» незачем.
+        if crypto_client is not None or settings.tracker.enabled:
+            uow_factory = UnitOfWorkFactory(database.session_factory)
+            web_app = build_web_app(
+                settings=settings,
+                uow_factory=uow_factory,
+                notifier=TelegramNotifier(bot, limiter),
+                translations=translations,
             )
+            if settings.tracker.enabled:
+                setup_redirect_routes(
+                    web_app,
+                    settings=settings,
+                    uow_factory=uow_factory,
+                    counter=click_counter,
+                )
+            web_runner = await start_web_app(web_app, settings.crypto)
 
         me = await bot.get_me()
         logger.info("Бот @%s запущен и готов к работе.", me.username)

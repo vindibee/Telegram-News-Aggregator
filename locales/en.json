@@ -229,5 +229,13 @@
       "too_short": "❌ The query is too short — at least 2 characters.",
       "too_long": "❌ The query is too long — 128 characters at most."
     }
+  },
+  "stats": {
+    "header": "📊 <b>Link statistics</b>",
+    "totals": "Links: <b>{links}</b>\nClicks: <b>{clicks}</b>\nUnique: <b>{unique}</b>",
+    "top_header": "\n<b>Most popular:</b>",
+    "item": "{index}. {clicks} · <a href=\"{url}\">{title}</a>",
+    "empty": "📊 <b>Link statistics</b>\n\nNo clicks yet.",
+    "disabled": "📊 Link tracking is not configured on this server."
   }
 }

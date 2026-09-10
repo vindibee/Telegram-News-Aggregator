@@ -24,11 +24,13 @@ from core.logger import get_logger, setup_logging
 from db.database import Database, DatabaseNotReadyError
 from db.uow import UnitOfWorkFactory
 from services.i18n import TranslationManager
+from services.tracker import ClickCounter
 from services.notifier import TelegramNotifier
 from services.ratelimit.base import RateLimitBackend
 from services.ratelimit.factory import build_backend
 from worker.runner import TaskRunner
 from worker.tasks import (
+    ClickFlushTask,
     ExpiryNotificationTask,
     PublishScheduledPostsTask,
     StaleInvoiceCleanupTask,
@@ -43,6 +45,7 @@ def build_runner(
     database: Database,
     bot: Bot,
     notifier: TelegramNotifier,
+    counter: ClickCounter,
 ) -> TaskRunner:
     """Собирает планировщик со всеми задачами.
 
@@ -58,8 +61,24 @@ def build_runner(
             SubscriptionExpirationTask(uow_factory, notifier, settings, translations),
             StaleInvoiceCleanupTask(uow_factory, settings),
             PublishScheduledPostsTask(uow_factory, bot, notifier, settings, translations),
+            ClickFlushTask(uow_factory, counter, settings),
         ]
     )
+
+
+def _build_redis(settings: Settings) -> object | None:
+    """Создаёт клиент Redis для очереди переходов.
+
+    Без Redis переходы не буферизуются вовсе: редирект-сервер их
+    просто не примет, и переносить будет нечего.
+    """
+    if not settings.redis.enabled:
+        logger.info("REDIS_URL не задан: перенос переходов отключён.")
+        return None
+
+    from redis.asyncio import Redis
+
+    return Redis.from_url(settings.redis.url, decode_responses=True)
 
 
 def _install_signal_handlers(stop_event: asyncio.Event) -> None:
@@ -109,7 +128,8 @@ async def run() -> None:
         await database.dispose()
         raise
 
-    runner = build_runner(settings, database, bot, notifier)
+    counter = ClickCounter(_build_redis(settings), prefix=settings.redis.prefix)
+    runner = build_runner(settings, database, bot, notifier, counter)
     runner.schedule()
 
     try:

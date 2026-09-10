@@ -7,6 +7,7 @@ from tg_bot.handlers.cabinet import router as cabinet_router
 from tg_bot.handlers.language import router as language_router
 from tg_bot.handlers.news import router as news_router
 from tg_bot.handlers.search import router as search_router
+from tg_bot.handlers.stats import router as stats_router
 from tg_bot.handlers.trial import router as trial_router
 
 router = Router(name="root")
@@ -26,6 +27,7 @@ router.include_router(language_router)
 # состояний, поэтому стоит рядом с остальными FSM-сценариями.
 router.include_router(cabinet_router)
 router.include_router(search_router)
+router.include_router(stats_router)
 router.include_router(trial_router)
 router.include_router(billing_router)
 router.include_router(news_router)

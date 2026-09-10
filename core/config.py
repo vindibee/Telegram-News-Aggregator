@@ -194,6 +194,25 @@ class BillingConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class TrackerConfig:
+    """Параметры трекинговых ссылок.
+
+    Без публичного адреса подменять ссылки нельзя: короткая
+    ссылка должна вести на сервер, доступный из интернета, и
+    выдумывать его за пользователя нельзя.
+    """
+
+    base_url: str
+    #: Сколько дней живёт короткая ссылка; 0 — бессрочно.
+    link_ttl_days: int
+
+    @property
+    def enabled(self) -> bool:
+        """Настроена ли подмена ссылок."""
+        return bool(self.base_url)
+
+
+@dataclass(frozen=True, slots=True)
 class CryptoBotConfig:
     """Параметры оплаты через CryptoBot.
 
@@ -272,6 +291,8 @@ class WorkerConfig:
     invoice_cleanup_interval: int
     #: Как часто разбирать очередь отложенных публикаций, секунды.
     publish_interval: int
+    #: Как часто переносить переходы из Redis в базу, секунды.
+    click_flush_interval: int
     #: Сколько записей обрабатывать за один проход.
     batch_size: int
 
@@ -297,6 +318,7 @@ class Settings:
     rate_limit: RateLimitConfig
     billing: BillingConfig
     crypto: CryptoBotConfig
+    tracker: TrackerConfig
     worker: WorkerConfig
     trial: TrialConfig
     dedup: DedupConfigValues
@@ -394,6 +416,11 @@ def load_settings() -> Settings:
         max_pending_invoices=_get_int("MAX_PENDING_INVOICES", 3, minimum=1),
     )
 
+    tracker = TrackerConfig(
+        base_url=_get_str("TRACKER_BASE_URL"),
+        link_ttl_days=_get_int("TRACKER_LINK_TTL_DAYS", 0),
+    )
+
     crypto = CryptoBotConfig(
         token=_get_str("CRYPTO_BOT_TOKEN"),
         api_url=_get_str("CRYPTO_BOT_API_URL", "https://pay.crypt.bot/api"),
@@ -410,6 +437,7 @@ def load_settings() -> Settings:
         expiration_check_interval=_get_int("WORKER_EXPIRATION_INTERVAL", 300, minimum=30),
         invoice_cleanup_interval=_get_int("WORKER_INVOICE_INTERVAL", 600, minimum=30),
         publish_interval=_get_int("WORKER_PUBLISH_INTERVAL", 30, minimum=5),
+        click_flush_interval=_get_int("WORKER_CLICK_FLUSH_INTERVAL", 60, minimum=5),
         batch_size=_get_int("WORKER_BATCH_SIZE", 100, minimum=1),
     )
 
@@ -452,6 +480,7 @@ def load_settings() -> Settings:
         rate_limit=rate_limit,
         billing=billing,
         crypto=crypto,
+        tracker=tracker,
         worker=worker,
         trial=trial,
         dedup=dedup,
