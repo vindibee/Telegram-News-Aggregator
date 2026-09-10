@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, ClassVar, Final
 
 from sqlalchemy import func, literal_column, select, update
@@ -135,6 +135,12 @@ class UserRepository(BaseRepository[User]):
             update(User)
             .where(User.id == user_id, User.referred_by_id.is_(None))
             .values(referred_by_id=referrer_id, updated_at=func.now())
+            # synchronize_session="fetch": тот же объект пользователя
+            # лежит в сессии и используется дальше по обработке
+            # апдейта. Без синхронизации он остался бы с пустым
+            # referred_by_id, и код после вызова считал бы, что
+            # реферер так и не назначен.
+            .execution_options(synchronize_session="fetch")
         )
         result = await self._session.execute(stmt)
         linked = bool(result.rowcount)

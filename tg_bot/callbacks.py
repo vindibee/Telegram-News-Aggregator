@@ -104,6 +104,11 @@ ACTION_SEARCH = "search"
 #: Действие «открыть личный кабинет».
 ACTION_CABINET = "cabinet"
 
+#: Действие «показать приглашения и ссылку».
+ACTION_REFERRAL = "referral"
+
+#: Действие «ввести промокод».
+ACTION_PROMO = "promo"
 #: Разделы личного кабинета.
 SECTION_MENU = "menu"
 SECTION_SOURCES = "sources"

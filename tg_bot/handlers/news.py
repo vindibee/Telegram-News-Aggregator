@@ -7,20 +7,24 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime, timezone
 from html import escape
 
-from aiogram import F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram import Bot, F, Router
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import CallbackQuery, Message
 
 from core.config import Settings
 from core.logger import get_logger
-from db.models import Post
+from db.models import Post, User
 from services.i18n import Translator
 from services.news_service import NewsService
+from services.referrals import ReferralService, parse_referral_payload
 from services.ratelimit.base import RateLimiter, RateLimitRule
+from db.uow import UnitOfWork
 from tg_bot.callbacks import ACTION_CHANNELS, ChannelCB, MenuCB, PostCB, RefreshCB
 from tg_bot.flags import no_single_flight, rate_limit
+from tg_bot.handlers.promo import notify_referrer
 from tg_bot.keyboards import kb_channels, kb_posts, kb_to_channels
 from tg_bot.utils import get_message, safe_edit_text
 from tg_bot.views import PostRenderer
@@ -32,11 +36,67 @@ router = Router(name="news")
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, settings: Settings, i18n: Translator) -> None:
-    """Приветствие и список каналов."""
+async def cmd_start(
+    message: Message,
+    command: CommandObject,
+    bot: Bot,
+    user: User,
+    uow: UnitOfWork,
+    settings: Settings,
+    i18n: Translator,
+) -> None:
+    """Приветствие, список каналов и разбор реферальной ссылки.
+
+    Реферальная нагрузка обрабатывается здесь, а не отдельной
+    командой: у Telegram один вход по ссылке — ``/start`` с
+    полезной нагрузкой, и другого места для неё просто нет.
+
+    Приветствие показывается в любом случае, даже если код оказался
+    чужим или уже использованным: человек пришёл пользоваться
+    ботом, а не разбираться в чужой реферальной ссылке.
+    """
+    code = parse_referral_payload(command.args)
+    if code is not None:
+        await _apply_referral(message, bot, code, user=user, uow=uow,
+                              settings=settings, i18n=i18n)
+
     await message.answer(
         i18n("start.greeting"), reply_markup=kb_channels(settings.channels, i18n)
     )
+
+
+async def _apply_referral(
+    message: Message,
+    bot: Bot,
+    code: str,
+    *,
+    user: User,
+    uow: UnitOfWork,
+    settings: Settings,
+    i18n: Translator,
+) -> None:
+    """Начисляет реферальный бонус и уведомляет обе стороны.
+
+    Молчаливые исходы намеренны: «код не найден» и «вы уже пришли по
+    чужой ссылке» интересны только тому, кто пытается накрутить
+    программу. Обычному человеку сообщать не о чем — он просто
+    открыл бота.
+    """
+    service = ReferralService(uow, bonus_days=settings.admin.referral_bonus_days)
+    result = await service.apply_code(
+        user=user, code=code, now=datetime.now(tz=timezone.utc)
+    )
+
+    if not result.granted:
+        return
+
+    await message.answer(
+        i18n("referral.welcome", days=i18n.plural("units.days", result.days))
+    )
+    if result.referrer is not None:
+        await notify_referrer(
+            bot, referrer=result.referrer, days=result.days, i18n=i18n
+        )
 
 
 @router.message(Command("help"))

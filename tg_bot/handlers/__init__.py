@@ -6,6 +6,7 @@ from tg_bot.handlers.billing import router as billing_router
 from tg_bot.handlers.cabinet import router as cabinet_router
 from tg_bot.handlers.language import router as language_router
 from tg_bot.handlers.news import router as news_router
+from tg_bot.handlers.promo import router as promo_router
 from tg_bot.handlers.search import router as search_router
 from tg_bot.handlers.stats import router as stats_router
 from tg_bot.handlers.trial import router as trial_router
@@ -26,6 +27,8 @@ router.include_router(language_router)
 # Кабинет тоже ловит свободный ввод, но только внутри своих
 # состояний, поэтому стоит рядом с остальными FSM-сценариями.
 router.include_router(cabinet_router)
+# Промокоды тоже ждут свободный ввод внутри своего состояния.
+router.include_router(promo_router)
 router.include_router(search_router)
 router.include_router(stats_router)
 router.include_router(trial_router)

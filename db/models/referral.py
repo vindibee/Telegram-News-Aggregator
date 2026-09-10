@@ -32,7 +32,13 @@ logger = get_logger(__name__)
 
 #: Допустимые переходы состояния реферала.
 _TRANSITIONS: dict[ReferralStatus, frozenset[ReferralStatus]] = {
-    ReferralStatus.PENDING: frozenset({ReferralStatus.QUALIFIED, ReferralStatus.REJECTED}),
+    # PENDING -> REWARDED существует ради бонуса, который выдаётся сразу
+    # при переходе по ссылке. Путь через QUALIFIED сохранён для схемы
+    # «бонус после первой оплаты»: переключение политики не требует
+    # ни миграции, ни правки состояний.
+    ReferralStatus.PENDING: frozenset(
+        {ReferralStatus.QUALIFIED, ReferralStatus.REWARDED, ReferralStatus.REJECTED}
+    ),
     ReferralStatus.QUALIFIED: frozenset({ReferralStatus.REWARDED, ReferralStatus.REJECTED}),
     ReferralStatus.REWARDED: frozenset(),
     ReferralStatus.REJECTED: frozenset(),
@@ -47,9 +53,13 @@ class Referral(Base, IdMixin):
     начислен, сколько дней и за какой платёж. Без отдельной записи
     повторный запуск обработчика оплаты начислил бы дни второй раз.
 
-    Вознаграждение привязано к первой оплате приглашённого, а не к его
-    регистрации: иначе реферальную программу выгодно фармить пустыми
-    аккаунтами.
+    Момент вознаграждения задаётся прикладным слоем. Сейчас бонус
+    выдаётся сразу при переходе по ссылке — так реферальная
+    программа работает как канал привлечения, а не как награда за
+    продажу. Плата за это — уязвимость к накрутке пустыми
+    аккаунтами, и сдерживают её те же отпечатки, что защищают
+    пробный период. Строгий вариант «бонус после первой оплаты»
+    выражается парой :meth:`qualify` и :meth:`reward`.
     """
 
     __tablename__ = "referrals"
@@ -173,11 +183,16 @@ class Referral(Base, IdMixin):
     def reward(self, days: int, moment: datetime) -> bool:
         """Фиксирует выданный пригласившему бонус.
 
+        Вызывается как сразу после регистрации приглашения, так и
+        после его зачёта по оплате — оба перехода разрешены.
+        Повторный вызов безопасен и возвращает ``False``: дубль
+        нажатия не должен превращаться в ошибку.
+
         :param days: Начисленные дни (строго положительные).
         :param moment: Момент начисления (timezone-aware).
         :return: ``True``, если бонус зафиксирован этим вызовом.
         :raises ValueError: Некорректное число дней.
-        :raises InvalidStateTransitionError: Приглашение ещё не зачтено.
+        :raises InvalidStateTransitionError: Приглашение отклонено.
         """
         if days <= 0:
             raise ValueError(f"Бонус должен быть положительным, получено: {days}")

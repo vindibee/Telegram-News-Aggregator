@@ -10,6 +10,12 @@ from db.repositories.errors import (
     RepositoryError,
 )
 from db.repositories.payment import PaymentCreateResult, PaymentRepository
+from db.repositories.promo import PromocodeRepository, PromocodeTotals
+from db.repositories.referral import (
+    ReferralRepository,
+    ReferralStats,
+    ReferralTotals,
+)
 from db.repositories.post import PostData, PostRepository
 from db.repositories.schedule import ScheduledPostRepository
 from db.repositories.tracking import (
@@ -43,6 +49,11 @@ __all__ = [
     "PaymentRepository",
     "PostData",
     "PostRepository",
+    "PromocodeRepository",
+    "PromocodeTotals",
+    "ReferralRepository",
+    "ReferralStats",
+    "ReferralTotals",
     "RepositoryError",
     "ScheduledPostRepository",
     "SubscriptionCreateResult",

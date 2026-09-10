@@ -251,11 +251,36 @@ def test_referral_qualify_is_idempotent_for_repeated_payment_events() -> None:
     assert referral.payment_id == 10, "Повтор не должен подменять платёж"
 
 
-def test_referral_reward_before_qualification_is_forbidden() -> None:
+def test_referral_reward_without_qualification_grants_bonus_immediately() -> None:
+    # Бонус выдаётся сразу при переходе по ссылке, без ожидания оплаты:
+    # реферальная программа работает как канал привлечения. Путь через
+    # qualify() при этом сохранён для политики «бонус после оплаты».
     referral = _referral()
 
+    assert referral.reward(days=3, moment=FROZEN_NOW) is True
+    assert referral.status is ReferralStatus.REWARDED
+    assert referral.bonus_days == 3
+    assert referral.payment_id is None, "Мгновенный бонус не привязан к платежу"
+    assert referral.qualified_at is None, "Зачёта по оплате не было"
+
+
+def test_referral_reward_is_idempotent_for_repeated_start() -> None:
+    # Двойной тап по реферальной ссылке — обычное дело, и второй вызов
+    # обязан вернуть False, а не поднять ошибку перехода.
+    referral = _referral()
+    referral.reward(days=3, moment=FROZEN_NOW)
+
+    assert referral.reward(days=3, moment=FROZEN_NOW) is False
+    assert referral.bonus_days == 3, "Повтор не должен удваивать бонус"
+
+
+def test_referral_reward_after_rejection_is_forbidden() -> None:
+    # Отклонённое приглашение — конечное состояние: вознаграждать нечего.
+    referral = _referral()
+    referral.reject(moment=FROZEN_NOW)
+
     with pytest.raises(InvalidStateTransitionError):
-        referral.reward(days=14, moment=FROZEN_NOW)
+        referral.reward(days=3, moment=FROZEN_NOW)
 
 
 def test_referral_reward_rejects_non_positive_bonus() -> None:

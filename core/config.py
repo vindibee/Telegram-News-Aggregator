@@ -194,6 +194,28 @@ class BillingConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class AdminConfig:
+    """Права администратора, реферальная программа и рассылка."""
+
+    #: Telegram ID администраторов «из коробки». Нужен для первичной
+    #: настройки: флаг ``users.is_admin`` кто-то должен выставить первым,
+    #: а сделать это через бота может только уже существующий админ.
+    ids: tuple[int, ...]
+    #: Сколько суток получает каждая сторона за приглашение.
+    referral_bonus_days: int
+    #: Сколько сообщений в секунду отправляет рассылка.
+    broadcast_rate: int
+    #: Сколько отправок идёт одновременно.
+    broadcast_workers: int
+    #: Размер страницы при выборке адресатов.
+    broadcast_page_size: int
+
+    def is_admin(self, telegram_id: int) -> bool:
+        """Входит ли пользователь в список администраторов из окружения."""
+        return telegram_id in self.ids
+
+
+@dataclass(frozen=True, slots=True)
 class TrackerConfig:
     """Параметры трекинговых ссылок.
 
@@ -319,6 +341,7 @@ class Settings:
     billing: BillingConfig
     crypto: CryptoBotConfig
     tracker: TrackerConfig
+    admin: AdminConfig
     worker: WorkerConfig
     trial: TrialConfig
     dedup: DedupConfigValues
@@ -416,6 +439,17 @@ def load_settings() -> Settings:
         max_pending_invoices=_get_int("MAX_PENDING_INVOICES", 3, minimum=1),
     )
 
+    admin = AdminConfig(
+        ids=_get_int_tuple("ADMIN_IDS", ()),
+        referral_bonus_days=_get_int("REFERRAL_BONUS_DAYS", 3, minimum=1),
+        # Bot API отбивает поток примерно от тридцати сообщений в секунду,
+        # причём ограничение общее для бота. Двадцать пять — запас на
+        # уведомления и публикации, которые идут через то же ведро.
+        broadcast_rate=_get_int("BROADCAST_RATE", 25, minimum=1),
+        broadcast_workers=_get_int("BROADCAST_WORKERS", 8, minimum=1),
+        broadcast_page_size=_get_int("BROADCAST_PAGE_SIZE", 500, minimum=1),
+    )
+
     tracker = TrackerConfig(
         base_url=_get_str("TRACKER_BASE_URL"),
         link_ttl_days=_get_int("TRACKER_LINK_TTL_DAYS", 0),
@@ -481,6 +515,7 @@ def load_settings() -> Settings:
         billing=billing,
         crypto=crypto,
         tracker=tracker,
+        admin=admin,
         worker=worker,
         trial=trial,
         dedup=dedup,

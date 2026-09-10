@@ -26,6 +26,8 @@ from db.enums import KeywordKind, Language
 from db.models import Post, UserChannel
 from services.i18n import Translator
 from tg_bot.callbacks import (
+    ACTION_PROMO,
+    ACTION_REFERRAL,
     ACTION_CABINET,
     ACTION_CHANNELS,
     ACTION_LANGUAGE,
@@ -302,8 +304,14 @@ def kb_cabinet(i18n: Translator) -> InlineKeyboardMarkup:
     builder.button(
         text=i18n("buttons.cab_subscription"), callback_data=CabinetCB(section=SECTION_SUBSCRIPTION)
     )
+    builder.button(
+        text=i18n("buttons.referral"), callback_data=MenuCB(action=ACTION_REFERRAL)
+    )
+    builder.button(
+        text=i18n("buttons.promo"), callback_data=MenuCB(action=ACTION_PROMO)
+    )
     builder.button(text=i18n("buttons.channels"), callback_data=MenuCB(action=ACTION_CHANNELS))
-    builder.adjust(1)
+    builder.adjust(1, 1, 1, 1, 2, 1)
     return builder.as_markup()
 
 

@@ -35,7 +35,9 @@
     "recheck": "🔄 Check permissions",
     "search": "🔎 Search",
     "prev_page": "◀️ Back",
-    "next_page": "Next ▶️"
+    "next_page": "Next ▶️",
+    "promo": "🎟 Promo code",
+    "referral": "👥 Invite a friend"
   },
   "units": {
     "days": {
@@ -237,5 +239,25 @@
     "item": "{index}. {clicks} · <a href=\"{url}\">{title}</a>",
     "empty": "📊 <b>Link statistics</b>\n\nNo clicks yet.",
     "disabled": "📊 Link tracking is not configured on this server."
+  },
+  "promo": {
+    "ask": "🎟 Send the promo code in a single message.\n\nCancel: /cancel",
+    "cancelled": "Promo code entry cancelled.",
+    "activated": "🎉 Promo code accepted!\n\nAdded: <b>{days}</b> of subscription.",
+    "invalid": "❌ This does not look like a promo code.",
+    "unknown": "❌ No such promo code.",
+    "disabled": "❌ This promo code is no longer valid.",
+    "expired": "❌ The promo code has expired.",
+    "exhausted": "❌ The promo code is used up: no activations left.",
+    "already_used": "❌ You have already used this promo code.",
+    "checkout_only": "ℹ️ This code applies at checkout — enter it when choosing a plan."
+  },
+  "referral": {
+    "header": "👥 <b>Invite your friends</b>",
+    "rules": "For every invited user both of you get <b>{days}</b> of subscription.",
+    "link": "Your link:\n<code>{link}</code>",
+    "stats": "Invited: <b>{invited}</b>\nEarned: <b>{days}</b>",
+    "welcome": "🎁 You joined by invitation — <b>{days}</b> of subscription added!",
+    "notify": "🎉 Someone joined via your link — <b>{days}</b> of subscription added!"
   }
 }

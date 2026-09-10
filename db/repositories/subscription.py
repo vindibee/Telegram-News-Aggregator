@@ -294,6 +294,15 @@ class SubscriptionRepository(BaseRepository[Subscription]):
         )
         subscription = (await self._session.execute(stmt)).scalar_one_or_none()
 
+        # Сессия уже держит эту строку в памяти, и RETURNING отдаёт именно
+        # её — с прежней датой окончания. Ни populate_existing, ни
+        # synchronize_session="fetch" объект при этом не освежают
+        # (проверено), поэтому значение перечитывается явно. Иначе наружу
+        # ушла бы подписка, которую только что продлили, но со старым
+        # сроком: пользователь увидел бы в ответе на оплату прежнюю дату.
+        if subscription is not None:
+            await self._session.refresh(subscription)
+
         logger.info(
             "По платежу id=%s начислено %d суток подписке id=%s (до %s)",
             payment_id, days, subscription_id,
@@ -460,6 +469,105 @@ class SubscriptionRepository(BaseRepository[Subscription]):
             await self._session.flush()
             logger.info("Отозван доступ у %d истёкших подписок", len(expired))
         return expired
+
+    @handle_db_errors
+    async def grant_bonus_days(
+        self,
+        user_id: int,
+        *,
+        days: int,
+        source: SubscriptionSource,
+        now: datetime,
+        plan: SubscriptionPlan = SubscriptionPlan.PRO,
+        payload: dict[str, Any] | None = None,
+    ) -> Subscription | None:
+        """Начисляет бонусные сутки без привязки к платежу.
+
+        Отличие от :meth:`apply_payment_grant` — в источнике
+        идемпотентности. У платежа есть собственный уникальный ключ, и
+        начисление умеет само отличать повтор вебхука. У бонуса такого
+        ключа нет: за однократность отвечает вызывающий код — строка
+        ``referrals`` (уникальна по приглашённому) или
+        ``promocode_redemptions`` (уникальна по паре «код + пользователь»).
+        Поэтому метод обязан вызываться **только** после успешной вставки
+        одной из этих строк и в той же транзакции: иначе бонус выдастся
+        повторно.
+
+        Продление считается выражением на стороне БД, а не в Python:
+        ``GREATEST(expires_at, now())`` не даёт «оживить» давно истёкшую
+        подписку задним числом и не оставляет окна между чтением и записью.
+
+        :param user_id: Кому начисляем.
+        :param days: Количество суток (строго положительное).
+        :param source: Источник бонуса (реферал, промокод, вручную).
+        :param now: Момент операции (timezone-aware).
+        :param plan: Тариф для впервые создаваемой подписки.
+        :param payload: Произвольные данные для журнала.
+        :return: Подписка после начисления либо ``None``, если она исчезла.
+        :raises ValueError: Некорректное число суток.
+        """
+        if days <= 0:
+            raise ValueError(f"Количество суток должно быть положительным, получено: {days}")
+
+        # Бонусный доступ выдаётся как пробный: платежа за ним нет, и
+        # считать такого пользователя оплатившим в метриках нельзя.
+        result = await self.get_or_create_live(
+            user_id,
+            plan=plan,
+            source=source,
+            status=SubscriptionStatus.TRIALING,
+            period_days=days,
+            now=now,
+        )
+
+        if result.created:
+            # Подписка создана сразу на нужный срок — продлевать нечего,
+            # событие CREATED уже записано внутри get_or_create_live.
+            logger.info(
+                "Бонус %d сут. (%s) выдан созданием подписки id=%s пользователю id=%s",
+                days, source, result.subscription.id, user_id,
+            )
+            return result.subscription
+
+        subscription_id = result.subscription.id
+        stmt = (
+            update(Subscription)
+            .where(Subscription.id == subscription_id)
+            .values(
+                expires_at=func.greatest(Subscription.expires_at, func.now())
+                + func.make_interval(0, 0, 0, days),
+                # Новый срок открывает новый цикл уведомлений об окончании.
+                expiry_notified_at=None,
+                updated_at=func.now(),
+            )
+            .returning(Subscription)
+            .execution_options(synchronize_session=False)
+        )
+        subscription = (await self._session.execute(stmt)).scalar_one_or_none()
+
+        # Сессия уже держит эту строку в памяти, и RETURNING отдаёт именно
+        # её — с прежней датой окончания. Ни populate_existing, ни
+        # synchronize_session="fetch" объект при этом не освежают
+        # (проверено), поэтому значение перечитывается явно. Иначе наружу
+        # ушла бы подписка, которую только что продлили, но со старым
+        # сроком: пользователь увидел бы в ответе на оплату прежнюю дату.
+        if subscription is not None:
+            await self._session.refresh(subscription)
+
+        await self.record_event(
+            subscription_id=subscription_id,
+            user_id=user_id,
+            kind=SubscriptionEventKind.EXTENDED,
+            days_granted=days,
+            payload={"source": str(source), **(payload or {})},
+        )
+
+        logger.info(
+            "Начислено %d бонусных сут. (%s) подписке id=%s пользователя id=%s (до %s)",
+            days, source, subscription_id, user_id,
+            subscription.expires_at if subscription else "неизвестно",
+        )
+        return subscription
 
     @handle_db_errors
     async def count_by_status(self) -> dict[SubscriptionStatus, int]:
