@@ -2,6 +2,7 @@
 
 from aiogram import Router
 
+from tg_bot.handlers.admin import router as admin_router
 from tg_bot.handlers.billing import router as billing_router
 from tg_bot.handlers.cabinet import router as cabinet_router
 from tg_bot.handlers.language import router as language_router
@@ -27,6 +28,10 @@ router.include_router(language_router)
 # Кабинет тоже ловит свободный ввод, но только внутри своих
 # состояний, поэтому стоит рядом с остальными FSM-сценариями.
 router.include_router(cabinet_router)
+# Панель администратора идёт до пользовательских сценариев: её
+# состояния FSM ловят произвольный ввод, а фильтр прав всё
+# равно пропускает дальше всех, кроме администраторов.
+router.include_router(admin_router)
 # Промокоды тоже ждут свободный ввод внутри своего состояния.
 router.include_router(promo_router)
 router.include_router(search_router)

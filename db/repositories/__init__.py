@@ -29,7 +29,13 @@ from db.repositories.subscription import (
     SubscriptionCreateResult,
     SubscriptionRepository,
 )
-from db.repositories.user import TrialClaimResult, UserRepository, UserUpsertResult
+from db.repositories.user import (
+    Recipient,
+    TrialClaimResult,
+    UserCounters,
+    UserRepository,
+    UserUpsertResult,
+)
 
 __all__ = [
     "BaseRepository",
@@ -51,6 +57,7 @@ __all__ = [
     "PostRepository",
     "PromocodeRepository",
     "PromocodeTotals",
+    "Recipient",
     "ReferralRepository",
     "ReferralStats",
     "ReferralTotals",
@@ -59,6 +66,7 @@ __all__ = [
     "SubscriptionCreateResult",
     "SubscriptionRepository",
     "TrialClaimResult",
+    "UserCounters",
     "UserRepository",
     "UserUpsertResult",
     "handle_db_errors",

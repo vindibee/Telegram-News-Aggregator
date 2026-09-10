@@ -12,7 +12,12 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import selectinload
 
 from core.logger import get_logger
-from db.enums import Language, TrialFingerprintKind
+from db.enums import (
+    BroadcastAudience,
+    Language,
+    SubscriptionStatus,
+    TrialFingerprintKind,
+)
 from db.enums import LIVE_SUBSCRIPTION_STATUSES
 from db.models import Subscription, TrialClaim, User
 from db.repositories.base import BaseRepository, handle_db_errors
@@ -30,6 +35,30 @@ class UserUpsertResult:
 
     user: User
     created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class Recipient:
+    """Адресат рассылки.
+
+    Внутренний идентификатор нужен наравне с ``telegram_id``: пометить
+    заблокировавшего бота можно только по первичному ключу, а тащить ради
+    этого целый объект пользователя в память рассылки незачем.
+    """
+
+    id: int
+    telegram_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class UserCounters:
+    """Счётчики пользователей для панели администратора."""
+
+    total: int
+    new_today: int
+    new_week: int
+    blocked: int
+    trial_used: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,3 +422,180 @@ class UserRepository(BaseRepository[User]):
             .limit(limit)
         )
         return (await self._session.execute(stmt)).scalars().all()
+
+    # ------------------------------------------------------- админ и рассылка
+    @handle_db_errors
+    async def set_admin(self, user_id: int, *, is_admin: bool = True) -> bool:
+        """Выдаёт или снимает права администратора.
+
+        :param user_id: Кому меняем права.
+        :param is_admin: Новое значение флага.
+        :return: ``True``, если пользователь найден и обновлён.
+        """
+        stmt = (
+            update(User)
+            .where(User.id == user_id)
+            .values(is_admin=is_admin, updated_at=func.now())
+            .returning(User.id)
+        )
+        updated = (await self._session.execute(stmt)).scalar_one_or_none()
+        if updated is None:
+            return False
+        logger.info(
+            "Пользователю id=%s %s права администратора",
+            user_id, "выданы" if is_admin else "сняты",
+        )
+        return True
+
+    @handle_db_errors
+    async def list_admins(self) -> Sequence[User]:
+        """Все администраторы бота."""
+        stmt = select(User).where(User.is_admin).order_by(User.id)
+        return (await self._session.execute(stmt)).scalars().all()
+
+    def _audience_stmt(self, audience: BroadcastAudience, now: datetime) -> Any:
+        """Строит запрос выборки адресатов рассылки.
+
+        Забаненные и заблокировавшие бота исключаются всегда: первым писать
+        не нужно, вторым — бесполезно, каждая попытка вернёт 403 и съест
+        жетон общего лимита исходящих.
+
+        :param audience: Целевая группа.
+        :param now: Момент выборки (timezone-aware).
+        :return: Незавершённый ``SELECT`` по ``users``.
+        """
+        stmt = select(User.id, User.telegram_id).where(
+            User.is_banned.is_(False),
+            User.is_bot_blocked.is_(False),
+        )
+
+        live = (
+            select(Subscription.user_id)
+            .where(
+                Subscription.user_id == User.id,
+                Subscription.status.in_(tuple(LIVE_SUBSCRIPTION_STATUSES)),
+                Subscription.expires_at > now,
+            )
+            .correlate(User)
+        )
+
+        if audience is BroadcastAudience.ACTIVE:
+            paid = live.where(Subscription.status == SubscriptionStatus.ACTIVE)
+            return stmt.where(paid.exists())
+
+        if audience is BroadcastAudience.EXPIRED_TRIAL:
+            # Триал был, а действующего доступа сейчас нет — та самая
+            # группа, ради которой рассылки обычно и затеваются. Проверка
+            # идёт по сроку, а не только по статусу: воркер помечает
+            # подписки истёкшими не мгновенно, и между истечением и его
+            # проходом человек не должен считаться активным.
+            return stmt.where(
+                User.trial_activated_at.is_not(None),
+                ~live.exists(),
+            )
+
+        return stmt
+
+    @handle_db_errors
+    async def count_audience(self, audience: BroadcastAudience, now: datetime) -> int:
+        """Считает адресатов рассылки.
+
+        :param audience: Целевая группа.
+        :param now: Момент выборки (timezone-aware).
+        :return: Количество получателей.
+        """
+        inner = self._audience_stmt(audience, now).subquery()
+        return int(await self._session.scalar(select(func.count()).select_from(inner)) or 0)
+
+    @handle_db_errors
+    async def fetch_audience_page(
+        self,
+        audience: BroadcastAudience,
+        *,
+        now: datetime,
+        after_id: int = 0,
+        limit: int = 500,
+    ) -> Sequence[Recipient]:
+        """Возвращает очередную страницу адресатов.
+
+        Постраничность через ``id > after_id``, а не ``OFFSET``: рассылка
+        по большой базе идёт минутами, за это время появляются новые
+        пользователи, и смещение начало бы пропускать и повторять строки.
+        Курсор по первичному ключу от вставок не зависит.
+
+        :param audience: Целевая группа.
+        :param now: Момент выборки (timezone-aware).
+        :param after_id: Идентификатор последнего обработанного адресата.
+        :param limit: Размер страницы.
+        :return: Адресаты, упорядоченные по идентификатору.
+        :raises ValueError: Некорректный размер страницы.
+        """
+        if limit <= 0:
+            raise ValueError(f"Размер страницы должен быть положительным, получено: {limit}")
+
+        stmt = (
+            self._audience_stmt(audience, now)
+            .where(User.id > after_id)
+            .order_by(User.id)
+            .limit(limit)
+        )
+        rows = (await self._session.execute(stmt)).all()
+        return [Recipient(id=int(user_id), telegram_id=int(tg_id)) for user_id, tg_id in rows]
+
+    @handle_db_errors
+    async def mark_bot_blocked_bulk(self, user_ids: Sequence[int]) -> int:
+        """Помечает сразу нескольких пользователей заблокировавшими бота.
+
+        Рассылка натыкается на 403 пачками, и отдельный ``UPDATE`` на
+        каждого превратил бы дешёвую операцию в тысячи обращений к базе.
+
+        :param user_ids: Внутренние идентификаторы пользователей.
+        :return: Сколько строк изменилось.
+        """
+        if not user_ids:
+            return 0
+
+        stmt = (
+            update(User)
+            .where(User.id.in_(tuple(user_ids)), User.is_bot_blocked.is_(False))
+            .values(is_bot_blocked=True, updated_at=func.now())
+            .execution_options(synchronize_session=False)
+        )
+        result = await self._session.execute(stmt)
+        marked = int(result.rowcount or 0)
+        if marked:
+            logger.info("Помечено заблокировавших бота: %d", marked)
+        return marked
+
+    # -------------------------------------------------------------- метрики
+    @handle_db_errors
+    async def counters(self, now: datetime) -> UserCounters:
+        """Собирает счётчики пользователей одним запросом.
+
+        Пять чисел показываются на одном экране, и пять отдельных запросов
+        к одной и той же таблице — пять полных проходов вместо одного.
+
+        :param now: Момент расчёта (timezone-aware).
+        :return: Счётчики для панели администратора.
+        """
+        day_ago = now - timedelta(days=1)
+        week_ago = now - timedelta(days=7)
+
+        stmt = select(
+            func.count(),
+            func.count().filter(User.created_at >= day_ago),
+            func.count().filter(User.created_at >= week_ago),
+            func.count().filter(User.is_bot_blocked),
+            func.count().filter(User.trial_activated_at.is_not(None)),
+        )
+        total, new_today, new_week, blocked, trial_used = (
+            await self._session.execute(stmt)
+        ).one()
+
+        return UserCounters(
+            total=int(total),
+            new_today=int(new_today),
+            new_week=int(new_week),
+            blocked=int(blocked),
+            trial_used=int(trial_used),
+        )

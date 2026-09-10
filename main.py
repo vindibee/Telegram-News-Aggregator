@@ -26,10 +26,11 @@ from services.billing import CryptoBotClient
 from services.dedup import DedupConfig
 from services.dedup_index import DedupIndex, build_dedup_index
 from services.media import MediaDownloader
+from services.broadcaster import Broadcaster
 from services.notifier import TelegramNotifier
 from services.tracker import ClickCounter
 from services.parser import TelegramWebParser
-from services.ratelimit.base import RateLimitBackend
+from services.ratelimit.base import RateLimitBackend, RateLimitRule
 from services.i18n import LanguageCache, TranslationManager, build_language_cache
 from services.ratelimit.factory import build_backend, build_policy, build_rules
 from tg_bot.errors import register_error_handlers
@@ -143,6 +144,8 @@ def build_fsm_storage(settings: Settings) -> BaseStorage:
 def build_dispatcher(
     settings: Settings,
     database: Database,
+    bot: Bot,
+    notifier: TelegramNotifier,
     http_session: aiohttp.ClientSession,
     limiter: RateLimitBackend,
     storage: BaseStorage,
@@ -164,6 +167,16 @@ def build_dispatcher(
     dispatcher["limiter"] = limiter
     dispatcher["translations"] = translations
     dispatcher["language_cache"] = language_cache
+    # Рассылка — объект уровня приложения, а не запроса: она
+    # переживает апдейт, которым запущена, и должна быть одна на
+    # процесс, иначе несколько рассылок делили бы ведро жетонов.
+    dispatcher["broadcaster"] = Broadcaster(
+        bot,
+        UnitOfWorkFactory(database.session_factory),
+        notifier,
+        workers=settings.admin.broadcast_workers,
+        page_size=settings.admin.broadcast_page_size,
+    )
 
     # outer_middleware срабатывает до фильтров, поэтому сессия БД доступна и им.
     dispatcher.update.outer_middleware(
@@ -229,6 +242,23 @@ async def run() -> None:
     dedup_index = build_dedup_index(settings.redis, settings.dedup.lookback_hours)
     click_counter = ClickCounter(_build_redis_client(settings), prefix=settings.redis.prefix)
     crypto_client = build_crypto_client(settings, http_session)
+    # Ведро исходящих одно на процесс: уведомления, публикации и
+    # рассылка делят лимит Bot API, который считается на бота
+    # целиком, а не на каждое место в коде отдельно.
+    notifier = TelegramNotifier(
+        bot,
+        limiter,
+        rule=RateLimitRule(
+            limit=settings.admin.broadcast_rate,
+            window=1.0,
+            burst=settings.admin.broadcast_rate,
+            scope="outbound",
+        ),
+    )
+    # Инициализация до try: иначе блок finally обратится к
+    # несуществующему имени, если HTTP-сервер не понадобился, и
+    # UnboundLocalError затрёт настоящую причину остановки.
+    web_runner = None
 
     try:
         # Схема БД разворачивается миграциями Alembic ("alembic upgrade head"),
@@ -242,6 +272,8 @@ async def run() -> None:
         dispatcher = build_dispatcher(
             settings,
             database,
+            bot,
+            notifier,
             http_session,
             limiter,
             storage,
@@ -259,7 +291,7 @@ async def run() -> None:
             web_app = build_web_app(
                 settings=settings,
                 uow_factory=uow_factory,
-                notifier=TelegramNotifier(bot, limiter),
+                notifier=notifier,
                 translations=translations,
             )
             if settings.tracker.enabled:

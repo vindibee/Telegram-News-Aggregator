@@ -289,6 +289,49 @@ class PaymentRepository(BaseRepository[Payment]):
         return Decimal(await self._session.scalar(stmt) or 0)
 
     @handle_db_errors
+    async def revenue_by_currency(
+        self, *, since: datetime | None = None
+    ) -> dict[str, Decimal]:
+        """Выручка в разрезе валют.
+
+        Суммировать звёзды с USDT в одно число нельзя: это разные единицы,
+        и курс между ними в базе не хранится. Панель показывает валюты
+        раздельно — иначе «доход» получился бы бессмысленной суммой.
+
+        :param since: Нижняя граница по дате оплаты.
+        :return: Отображение «валюта → сумма», только непустые валюты.
+        """
+        stmt = (
+            select(Payment.currency, func.coalesce(func.sum(Payment.amount), 0))
+            .where(Payment.status == PaymentStatus.SUCCEEDED)
+            .group_by(Payment.currency)
+            .order_by(Payment.currency)
+        )
+        if since is not None:
+            stmt = stmt.where(Payment.paid_at >= since)
+
+        rows = (await self._session.execute(stmt)).all()
+        return {currency: Decimal(amount or 0) for currency, amount in rows}
+
+    @handle_db_errors
+    async def count_paying_users(self, *, since: datetime | None = None) -> int:
+        """Сколько разных пользователей хоть раз успешно заплатили.
+
+        Именно это число, а не количество платежей, стоит в знаменателе
+        конверсии: один человек с пятью продлениями — по-прежнему один
+        оплативший.
+
+        :param since: Нижняя граница по дате оплаты.
+        :return: Количество плательщиков.
+        """
+        stmt = select(func.count(func.distinct(Payment.user_id))).where(
+            Payment.status == PaymentStatus.SUCCEEDED
+        )
+        if since is not None:
+            stmt = stmt.where(Payment.paid_at >= since)
+        return int(await self._session.scalar(stmt) or 0)
+
+    @handle_db_errors
     async def count_pending(self, user_id: int) -> int:
         """Сколько у пользователя незавершённых счетов."""
         stmt = (

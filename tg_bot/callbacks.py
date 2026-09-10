@@ -77,6 +77,24 @@ class SearchPageCB(CallbackData, prefix="sp"):
     page: int
 
 
+class AdminCB(CallbackData, prefix="adm"):
+    """Навигация по разделам панели администратора."""
+
+    action: str
+
+
+class BroadcastCB(CallbackData, prefix="bc"):
+    """Управление массовой рассылкой.
+
+    ``audience`` пустая у действий, которые аудитории не касаются
+    (подтверждение, отмена, остановка): собственного типа под каждое
+    действие заводить незачем, а 64 байта callback_data это переживает.
+    """
+
+    action: str
+    audience: str = ""
+
+
 class LanguageCB(CallbackData, prefix="lang"):
     """Выбрать язык интерфейса."""
 
@@ -109,6 +127,19 @@ ACTION_REFERRAL = "referral"
 
 #: Действие «ввести промокод».
 ACTION_PROMO = "promo"
+
+#: Разделы панели администратора.
+ADMIN_DASHBOARD = "dash"
+ADMIN_BROADCAST = "cast"
+ADMIN_PROMOCODES = "promo"
+ADMIN_REFERRALS = "ref"
+
+#: Действия рассылки.
+BROADCAST_PICK = "pick"
+BROADCAST_START = "go"
+BROADCAST_CANCEL = "no"
+BROADCAST_STOP = "stop"
+
 #: Разделы личного кабинета.
 SECTION_MENU = "menu"
 SECTION_SOURCES = "sources"
