@@ -181,6 +181,14 @@ class RateLimitConfig:
     warn_cooldown: float
     mute_durations: tuple[int, ...]
     mute_level_ttl: float
+    #: Минимальный интервал между обращениями, секунды.
+    cooldown_interval: float
+    #: Время жизни блокировки критического действия, секунды.
+    critical_lock_ttl: float
+    #: Пауза после успешного критического действия, секунды.
+    critical_cooldown: float
+    #: Отказывать в критическом действии при недоступном хранилище.
+    critical_fail_closed: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -432,6 +440,10 @@ def load_settings() -> Settings:
         warn_cooldown=_get_float("RL_WARN_COOLDOWN", 10.0, minimum=1.0),
         mute_durations=_get_int_tuple("RL_MUTE_DURATIONS", (30, 120, 600)),
         mute_level_ttl=_get_float("RL_MUTE_LEVEL_TTL", 3600.0, minimum=60.0),
+        cooldown_interval=_get_float("SECURITY_COOLDOWN", 0.5, minimum=0.05),
+        critical_lock_ttl=_get_float("SECURITY_LOCK_TTL", 30.0, minimum=1.0),
+        critical_cooldown=_get_float("SECURITY_ACTION_COOLDOWN", 5.0, minimum=0.5),
+        critical_fail_closed=_get_bool("SECURITY_FAIL_CLOSED", False),
     )
 
     billing = BillingConfig(

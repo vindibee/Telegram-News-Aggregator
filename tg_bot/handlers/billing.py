@@ -31,7 +31,7 @@ from tg_bot.callbacks import (
     PayMethodCB,
     PlanCB,
 )
-from tg_bot.flags import rate_limit, skip_throttling
+from tg_bot.flags import critical, merge, rate_limit, skip_throttling
 from tg_bot.keyboards import (
     kb_after_payment,
     kb_crypto_invoice,
@@ -128,7 +128,13 @@ async def choose_pay_method(
 
 # Выставление счёта обращается к внешнему API и создаёт строку в БД,
 # поэтому лимит здесь строже общего для кнопок.
-@router.callback_query(PayMethodCB.filter(), **rate_limit(5, 60, scope="invoice"))
+# Выставление счёта критично вдвойне: повтор создаёт второй счёт, а
+# приходит он обычно уже после того, как хендлер отработал, — одной
+# защиты от одновременного нажатия для этого мало.
+@router.callback_query(
+    PayMethodCB.filter(),
+    **merge(rate_limit(5, 60, scope="invoice"), critical("invoice")),
+)
 async def send_invoice(
     callback: CallbackQuery,
     callback_data: PayMethodCB,

@@ -27,7 +27,7 @@ from db.models import User
 from services.i18n import Translator
 from services.trial import ForeignContactError, TrialError, TrialOutcome, TrialService
 from tg_bot.callbacks import ACTION_TRIAL, MenuCB
-from tg_bot.flags import rate_limit
+from tg_bot.flags import critical, merge, rate_limit
 from tg_bot.keyboards import (
     kb_after_trial,
     kb_hide_contact_request,
@@ -44,7 +44,12 @@ router = Router(name="trial")
 
 
 
-@router.message(Command("trial"), **rate_limit(3, 300, scope="trial"))
+# Оба входа в выдачу триала делят одно имя действия: активировать
+# пробный период дважды нельзя ни командой, ни кнопкой.
+@router.message(
+    Command("trial"),
+    **merge(rate_limit(3, 300, scope="trial"), critical("trial")),
+)
 async def cmd_trial(
     message: Message,
     user: User,
@@ -57,7 +62,10 @@ async def cmd_trial(
     await _offer_trial(message, user, trial, state, settings, i18n)
 
 
-@router.callback_query(MenuCB.filter(F.action == ACTION_TRIAL), **rate_limit(3, 300, scope="trial"))
+@router.callback_query(
+    MenuCB.filter(F.action == ACTION_TRIAL),
+    **merge(rate_limit(3, 300, scope="trial"), critical("trial")),
+)
 async def start_trial(
     callback: CallbackQuery,
     user: User,
@@ -84,7 +92,7 @@ async def cancel_trial(message: Message, state: FSMContext, i18n: Translator) ->
     await message.answer(i18n("trial.cancel_hint"), reply_markup=kb_trial_declined(i18n))
 
 
-@router.message(TrialStates.waiting_for_contact, F.contact)
+@router.message(TrialStates.waiting_for_contact, F.contact, **critical("trial"))
 async def process_contact(
     message: Message,
     user: User,

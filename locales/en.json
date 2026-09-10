@@ -259,5 +259,8 @@
     "stats": "Invited: <b>{invited}</b>\nEarned: <b>{days}</b>",
     "welcome": "🎁 You joined by invitation — <b>{days}</b> of subscription added!",
     "notify": "🎉 Someone joined via your link — <b>{days}</b> of subscription added!"
+  },
+  "security": {
+    "in_progress": "⏳ This action is already running — give it a couple of seconds."
   }
 }

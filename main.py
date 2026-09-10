@@ -33,15 +33,15 @@ from services.parser import TelegramWebParser
 from services.ratelimit.base import RateLimitBackend, RateLimitRule
 from services.i18n import LanguageCache, TranslationManager, build_language_cache
 from services.ratelimit.factory import build_backend, build_policy, build_rules
+from services.ratelimit.sliding import InMemorySlidingWindow, RedisSlidingWindow
 from tg_bot.errors import register_error_handlers
 from tg_bot.handlers import router
 from tg_bot.middlewares import (
     DependenciesMiddleware,
     I18nMiddleware,
-    SingleFlightMiddleware,
-    ThrottlingMiddleware,
     UserContextMiddleware,
 )
+from tg_bot.middlewares.security import SecurityConfig, setup_security
 from tg_bot.views import PostRenderer
 from web import build_web_app, start_web_app
 from web.redirect_app import setup_redirect_routes
@@ -98,6 +98,24 @@ def _build_redis_client(settings: Settings) -> object | None:
     return Redis.from_url(settings.redis.url, decode_responses=True)
 
 
+def build_cooldown_limiter(settings: Settings, client: object | None) -> object:
+    """Создаёт ограничитель со скользящим окном для жёсткого интервала.
+
+    Отдельная стратегия, а не общее ведро с жетонами: ведро специально
+    разрешает всплеск, а здесь нужен строгий пол — не чаще одного
+    обращения в заданный интервал.
+
+    :param settings: Настройки приложения.
+    :param client: Клиент Redis либо ``None``.
+    :return: Ограничитель, общий для реплик или локальный.
+    """
+    if client is None:
+        logger.info("REDIS_URL не задан: жёсткий интервал считается в памяти процесса.")
+        return InMemorySlidingWindow()
+
+    return RedisSlidingWindow(client, prefix=f"{settings.redis.prefix}:sw")
+
+
 def build_crypto_client(
     settings: Settings,
     http_session: aiohttp.ClientSession,
@@ -152,6 +170,7 @@ def build_dispatcher(
     translations: TranslationManager,
     language_cache: LanguageCache,
     dedup_index: DedupIndex,
+    cooldown_limiter: object,
     crypto_client: CryptoBotClient | None = None,
 ) -> Dispatcher:
     """Собирает диспетчер со всеми зависимостями, middleware и хендлерами."""
@@ -201,14 +220,22 @@ def build_dispatcher(
     dispatcher.update.outer_middleware(I18nMiddleware(translations, language_cache))
 
     if settings.rate_limit.enabled:
-        # Внутренние middleware наблюдателей: только здесь известен выбранный
-        # хендлер, а значит и его флаги с индивидуальным лимитом.
-        dispatcher.message.middleware(ThrottlingMiddleware(policy, rules.message))
-        dispatcher.callback_query.middleware(ThrottlingMiddleware(policy, rules.callback))
-        # Защита от двойных нажатий ставится после троттлинга: блокировку
-        # имеет смысл брать только для запроса, который реально исполнится.
-        dispatcher.callback_query.middleware(
-            SingleFlightMiddleware(limiter, ttl=settings.rate_limit.single_flight_ttl)
+        # Весь защитный контур собирается одним вызовом: порядок слоёв
+        # важен и описан там же, где они регистрируются.
+        setup_security(
+            dispatcher,
+            policy=policy,
+            guard=limiter,
+            cooldown_limiter=cooldown_limiter,
+            message_rule=rules.message,
+            callback_rule=rules.callback,
+            single_flight_ttl=settings.rate_limit.single_flight_ttl,
+            config=SecurityConfig(
+                cooldown=settings.rate_limit.cooldown_interval,
+                lock_ttl=settings.rate_limit.critical_lock_ttl,
+                action_cooldown=settings.rate_limit.critical_cooldown,
+                fail_closed=settings.rate_limit.critical_fail_closed,
+            ),
         )
     else:
         logger.warning("Ограничение частоты отключено настройкой RATE_LIMIT_ENABLED.")
@@ -240,7 +267,9 @@ async def run() -> None:
     translations = TranslationManager.from_directory()
     language_cache = build_language_cache(settings.redis)
     dedup_index = build_dedup_index(settings.redis, settings.dedup.lookback_hours)
-    click_counter = ClickCounter(_build_redis_client(settings), prefix=settings.redis.prefix)
+    redis_client = _build_redis_client(settings)
+    click_counter = ClickCounter(redis_client, prefix=settings.redis.prefix)
+    cooldown_limiter = build_cooldown_limiter(settings, redis_client)
     crypto_client = build_crypto_client(settings, http_session)
     # Ведро исходящих одно на процесс: уведомления, публикации и
     # рассылка делят лимит Bot API, который считается на бота
@@ -280,6 +309,7 @@ async def run() -> None:
             translations,
             language_cache,
             dedup_index,
+            cooldown_limiter,
             crypto_client,
         )
 

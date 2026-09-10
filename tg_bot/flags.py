@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Final
 
 from services.ratelimit.base import RateLimitRule
@@ -24,6 +25,9 @@ NO_SINGLE_FLIGHT_FLAG: Final[str] = "no_single_flight"
 
 #: Имя флага, полностью отключающего троттлинг для хендлера.
 SKIP_THROTTLING_FLAG: Final[str] = "skip_throttling"
+
+#: Имя флага критического действия, защищаемого распределённой блокировкой.
+CRITICAL_FLAG: Final[str] = "critical_action"
 
 
 def rate_limit(
@@ -51,6 +55,30 @@ def rate_limit(
     return {"flags": {RATE_LIMIT_FLAG: rule}}
 
 
+def merge(*parts: dict[str, Any]) -> dict[str, Any]:
+    """Объединяет несколько наборов флагов в один.
+
+    Нужна потому, что каждый помощник возвращает словарь с одним и тем же
+    ключом ``flags``, и распаковать два таких словаря в один вызов нельзя —
+    Python отвергнет повторяющийся именованный аргумент.
+
+    Использование::
+
+        @router.callback_query(
+            PayMethodCB.filter(),
+            **merge(rate_limit(5, 60, scope="invoice"), critical("invoice")),
+        )
+        async def send_invoice(...): ...
+
+    :param parts: Наборы флагов от помощников этого модуля.
+    :return: Единый словарь с ключом ``flags``.
+    """
+    merged: dict[str, Any] = {}
+    for part in parts:
+        merged.update(part.get("flags", {}))
+    return {"flags": merged}
+
+
 def skip_throttling() -> dict[str, Any]:
     """Отключает проверку частоты для хендлера.
 
@@ -68,3 +96,45 @@ def no_single_flight() -> dict[str, Any]:
     безвредно, а блокировка только мешает.
     """
     return {"flags": {NO_SINGLE_FLIGHT_FLAG: True}}
+
+
+@dataclass(frozen=True, slots=True)
+class CriticalActionFlag:
+    """Содержимое флага критического действия.
+
+    Имя и пауза разделены намеренно: имя задаёт область блокировки (кто с
+    кем её делит), а пауза — насколько долго не принимать повтор после
+    успеха. Их часто хочется настроить независимо.
+    """
+
+    name: str
+    cooldown: float | None = None
+
+
+def critical(name: str, *, cooldown: float | None = None) -> dict[str, Any]:
+    """Помечает хендлер как критическое действие.
+
+    Критическим считается то, что нельзя выполнить дважды по ошибке:
+    выставление счёта, активация пробного периода, запуск рассылки.
+    Защита от двойного нажатия здесь строже обычной — блокировка держится
+    и некоторое время после успешного завершения, потому что повторный
+    тап приходит уже после того, как хендлер отработал.
+
+    Использование::
+
+        @router.callback_query(PlanCB.filter(), **critical("invoice"))
+        async def create_invoice(...): ...
+
+    :param name: Имя действия. Хендлеры с одним именем делят блокировку —
+        два способа оплаты одного тарифа не должны запускаться разом.
+    :param cooldown: Сколько секунд не принимать повтор после успеха;
+        ``None`` — значение по умолчанию для всех критических действий.
+    :return: Словарь с ключом ``flags`` для передачи в регистрацию хендлера.
+    :raises ValueError: Пустое имя или неположительная пауза.
+    """
+    if not name.strip():
+        raise ValueError("Имя критического действия не может быть пустым.")
+    if cooldown is not None and cooldown <= 0:
+        raise ValueError(f"Пауза должна быть положительной, получено: {cooldown}")
+
+    return {"flags": {CRITICAL_FLAG: CriticalActionFlag(name=name.strip(), cooldown=cooldown)}}
