@@ -15,6 +15,7 @@ from db.models import Post
 from db.repositories import PostData
 from db.uow import UnitOfWork
 from services.dedup import DedupCandidate, DedupConfig, DeduplicationService, DuplicateMatch
+from services.dedup_index import DedupIndex
 from services.fingerprint import build_fingerprint
 from services.parser import ParsedPost, TelegramWebParser
 
@@ -44,11 +45,12 @@ class NewsService:
         parser: TelegramWebParser,
         config: ParserConfig,
         dedup_config: DedupConfig | None = None,
+        dedup_index: DedupIndex | None = None,
     ) -> None:
         self._uow = uow
         self._parser = parser
         self._config = config
-        self._dedup = DeduplicationService(uow.posts, dedup_config)
+        self._dedup = DeduplicationService(uow.posts, dedup_config, dedup_index)
 
     async def get_posts(self, channel: str) -> Sequence[Post]:
         """Последние сохранённые записи канала."""
@@ -77,6 +79,10 @@ class NewsService:
 
         inserted = await self._uow.posts.bulk_save(rows)
         marked = await self._link_batch_duplicates(matches, inserted)
+        # Окно быстрого поиска наполняется только оригиналами: дубликаты
+        # скрыты из выдачи, и предлагать их в качестве канонической записи
+        # незачем.
+        await self._remember_originals(parsed, matches, inserted)
 
         logger.info(
             "Канал @%s обновлён: получено %d, новых %d, дубликатов %d",
@@ -85,6 +91,27 @@ class NewsService:
 
         posts = await self._uow.posts.get_recent(channel, limit=self._config.max_posts)
         return RefreshResult(added=len(inserted), duplicates=marked + self._known_links(matches), posts=posts)
+
+    async def _remember_originals(
+        self,
+        parsed: Sequence[ParsedPost],
+        matches: dict[tuple[str, int], DuplicateMatch],
+        inserted: dict[tuple[str, int], int],
+    ) -> None:
+        """Кладёт сохранённые оригиналы в окно дедупликации.
+
+        :param parsed: Разобранные записи канала.
+        :param matches: Найденные дубликаты.
+        :param inserted: Отображение «ключ записи → идентификатор в базе».
+        """
+        for post in parsed:
+            key = next(
+                (item for item in inserted if item[1] == post.message_id),
+                None,
+            )
+            if key is None or key in matches:
+                continue
+            await self._dedup.remember(inserted[key], post.text)
 
     async def _link_batch_duplicates(
         self,

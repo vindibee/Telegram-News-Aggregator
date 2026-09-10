@@ -35,19 +35,22 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Final
 
 from core.logger import get_logger
 from db.models import Post
 from db.repositories.post import PostRepository
+from services.dedup_index import DedupIndex, NullDedupIndex
 from services.fingerprint import (
     TextFingerprint,
+    build_fingerprint,
     extract_search_terms,
     hamming_distance,
     jaccard_similarity,
     levenshtein_ratio,
+    normalize_text,
     word_count,
 )
 
@@ -121,6 +124,20 @@ class DedupCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class DuplicateReport:
+    """Найденный оригинал для отдельно проверенного текста."""
+
+    post_id: int
+    similarity: float
+    method: MatchMethod
+
+    @property
+    def similarity_percent(self) -> float:
+        """Степень сходства в процентах, округлённая до десятых."""
+        return round(self.similarity * 100, 1)
+
+
+@dataclass(frozen=True, slots=True)
 class DuplicateMatch:
     """Найденный оригинал."""
 
@@ -142,9 +159,142 @@ _EXACT_SIMILARITY: Final[float] = 1.0
 class DeduplicationService:
     """Определяет, повторяет ли новость уже известную."""
 
-    def __init__(self, repo: PostRepository, config: DedupConfig | None = None) -> None:
+    def __init__(
+        self,
+        repo: PostRepository,
+        config: DedupConfig | None = None,
+        index: DedupIndex | None = None,
+    ) -> None:
         self._repo = repo
         self._config = config or DedupConfig()
+        # Индекс — ускоритель, а не источник правды: его отсутствие
+        # возвращает сервис к работе через одну лишь базу.
+        self._index = index or NullDedupIndex()
+
+    # ---------------------------------------------------------- одиночная проверка
+    async def is_duplicate(self, new_text: str, threshold: float | None = None) -> bool:
+        """Отвечает, повторяет ли текст уже сохранённую новость.
+
+        Удобен там, где нужен только ответ «да или нет» — например, перед
+        ручной публикацией. Для пачки записей парсера используйте
+        :meth:`classify`: он дополнительно сравнивает записи между собой.
+
+        :param new_text: Проверяемый текст.
+        :param threshold: Порог сходства; по умолчанию берётся из настроек.
+        :return: ``True``, если найден оригинал.
+        """
+        return await self.find_duplicate(new_text, threshold) is not None
+
+    async def find_duplicate(
+        self,
+        new_text: str,
+        threshold: float | None = None,
+    ) -> DuplicateReport | None:
+        """Ищет оригинал для отдельного текста.
+
+        :param new_text: Проверяемый текст.
+        :param threshold: Порог сходства; по умолчанию берётся из настроек.
+        :return: Отчёт с идентификатором оригинала и степенью сходства
+            либо ``None``, если совпадений нет.
+        """
+        if not self._config.enabled:
+            return None
+
+        fingerprint = build_fingerprint(new_text)
+        if fingerprint.is_empty:
+            return None
+
+        limit = threshold if threshold is not None else self._config.similarity_threshold
+        since = datetime.now(tz=timezone.utc) - self._config.lookback
+        normalized = normalize_text(new_text)
+
+        exact_id = await self._find_exact(fingerprint.content_hash, since)
+        if exact_id is not None:
+            return DuplicateReport(
+                post_id=exact_id, similarity=_EXACT_SIMILARITY, method=MatchMethod.EXACT
+            )
+
+        best_id: int | None = None
+        best_similarity = 0.0
+        for post_id, simhash, text in await self._window(fingerprint, normalized, since):
+            if hamming_distance(fingerprint.simhash, simhash) > self._config.hamming_threshold:
+                continue
+            similarity, _ = self._compare(normalized, text)
+            if similarity >= limit and similarity > best_similarity:
+                best_id, best_similarity = post_id, similarity
+
+        if best_id is None:
+            return None
+
+        logger.info(
+            "Текст признан дубликатом записи id=%s (сходство %.1f%%)",
+            best_id, best_similarity * 100,
+        )
+        return DuplicateReport(
+            post_id=best_id, similarity=best_similarity, method=MatchMethod.SIMHASH
+        )
+
+    async def remember(self, post_id: int, text: str) -> None:
+        """Кладёт сохранённую запись в окно быстрого поиска.
+
+        Вызывается после записи в базу: до появления идентификатора
+        запоминать нечего.
+
+        :param post_id: Идентификатор сохранённой записи.
+        :param text: Исходный текст новости.
+        """
+        if not self._config.enabled:
+            return
+
+        fingerprint = build_fingerprint(text)
+        await self._index.remember(post_id, fingerprint, normalize_text(text))
+
+    async def _find_exact(self, content_hash: str, since: datetime) -> int | None:
+        """Ищет точное совпадение сначала в индексе, затем в базе."""
+        cached = await self._index.find_exact(content_hash)
+        if cached is not None:
+            return cached
+
+        stored = await self._repo.get_by_content_hash(content_hash, since=since)
+        return stored.id if stored is not None else None
+
+    async def _window(
+        self,
+        fingerprint: TextFingerprint,
+        normalized: str,
+        since: datetime,
+    ) -> list[tuple[int, int, str]]:
+        """Собирает записи окна для сравнения.
+
+        Индекс отдаёт кандидатов дешевле, но полагаться только на него
+        нельзя: он мог не прогреться после перезапуска. Поэтому база
+        опрашивается всегда по срезам, а дорогой полнотекстовый поиск —
+        только когда кандидатов всё ещё мало.
+        """
+        window: dict[int, tuple[int, int, str]] = {
+            item.post_id: (item.post_id, item.simhash, item.text)
+            for item in await self._index.find_candidates(
+                fingerprint.bands, self._config.candidate_limit
+            )
+        }
+
+        by_bands = await self._repo.find_similar_candidates(
+            fingerprint.bands, since=since, limit=self._config.candidate_limit
+        )
+        for post in by_bands:
+            if post.simhash is not None:
+                window[post.id] = (post.id, post.simhash, normalize_text(post.content))
+
+        if not window:
+            terms = extract_search_terms(normalized)
+            by_text = await self._repo.find_candidates_by_text(
+                terms, since=since, limit=self._config.candidate_limit
+            )
+            for post in by_text:
+                if post.simhash is not None:
+                    window[post.id] = (post.id, post.simhash, normalize_text(post.content))
+
+        return list(window.values())
 
     async def classify(
         self,
@@ -234,14 +384,21 @@ class DeduplicationService:
         """Ищет оригинал среди уже сохранённых записей."""
         since = candidate.post_time - self._config.lookback
 
-        exact = await self._repo.get_by_content_hash(
-            candidate.fingerprint.content_hash, since=since
-        )
-        if exact is not None:
+        # Точные перепечатки составляют большинство дубликатов, поэтому
+        # самый частый ответ стоит одного обращения к Redis вместо запроса
+        # к базе.
+        exact_id = await self._index.find_exact(candidate.fingerprint.content_hash)
+        if exact_id is None:
+            exact = await self._repo.get_by_content_hash(
+                candidate.fingerprint.content_hash, since=since
+            )
+            exact_id = exact.id if exact is not None else None
+
+        if exact_id is not None:
             return DuplicateMatch(
                 method=MatchMethod.EXACT,
                 similarity=_EXACT_SIMILARITY,
-                canonical_id=exact.id,
+                canonical_id=exact_id,
             )
 
         candidates = await self._collect_candidates(candidate, since)

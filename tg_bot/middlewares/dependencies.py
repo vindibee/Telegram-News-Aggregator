@@ -14,6 +14,7 @@ from core.logger import get_logger
 from db.uow import UnitOfWorkFactory
 from services.billing import BillingService, CryptoBotClient
 from services.dedup import DedupConfig
+from services.dedup_index import DedupIndex, NullDedupIndex
 from services.news_service import NewsService
 from services.parser import TelegramWebParser
 from services.trial import TrialService
@@ -42,6 +43,7 @@ class DependenciesMiddleware(BaseMiddleware):
         invoice_ttl: timedelta,
         dedup_config: DedupConfig,
         trial_config: TrialConfig,
+        dedup_index: DedupIndex | None = None,
         crypto_client: CryptoBotClient | None = None,
         crypto_invoice_ttl: timedelta = timedelta(hours=1),
     ) -> None:
@@ -50,6 +52,7 @@ class DependenciesMiddleware(BaseMiddleware):
         self._parser_config = parser_config
         self._invoice_ttl = invoice_ttl
         self._dedup_config = dedup_config
+        self._dedup_index = dedup_index or NullDedupIndex()
         self._trial_config = trial_config
         self._crypto_client = crypto_client
         self._crypto_invoice_ttl = crypto_invoice_ttl
@@ -65,7 +68,13 @@ class DependenciesMiddleware(BaseMiddleware):
             # Парсер отдаётся хендлерам напрямую: личному кабинету он нужен
             # для проверки канала до того, как появится что показывать.
             data["parser"] = self._parser
-            data["service"] = NewsService(uow, self._parser, self._parser_config, self._dedup_config)
+            data["service"] = NewsService(
+                uow,
+                self._parser,
+                self._parser_config,
+                self._dedup_config,
+                self._dedup_index,
+            )
             data["billing"] = BillingService(
                 uow,
                 invoice_ttl=self._invoice_ttl,

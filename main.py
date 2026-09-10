@@ -24,6 +24,7 @@ from db.database import Database, DatabaseNotReadyError
 from db.uow import UnitOfWorkFactory
 from services.billing import CryptoBotClient
 from services.dedup import DedupConfig
+from services.dedup_index import DedupIndex, build_dedup_index
 from services.media import MediaDownloader
 from services.notifier import TelegramNotifier
 from services.parser import TelegramWebParser
@@ -130,6 +131,7 @@ def build_dispatcher(
     storage: BaseStorage,
     translations: TranslationManager,
     language_cache: LanguageCache,
+    dedup_index: DedupIndex,
     crypto_client: CryptoBotClient | None = None,
 ) -> Dispatcher:
     """Собирает диспетчер со всеми зависимостями, middleware и хендлерами."""
@@ -154,6 +156,7 @@ def build_dispatcher(
             settings.parser,
             invoice_ttl=timedelta(minutes=settings.billing.invoice_ttl_minutes),
             dedup_config=build_dedup_config(settings),
+            dedup_index=dedup_index,
             trial_config=settings.trial,
             crypto_client=crypto_client,
             crypto_invoice_ttl=timedelta(minutes=settings.crypto.invoice_ttl_minutes),
@@ -206,6 +209,7 @@ async def run() -> None:
     # ронять запуск, а не всплывать в чате у пользователя.
     translations = TranslationManager.from_directory()
     language_cache = build_language_cache(settings.redis)
+    dedup_index = build_dedup_index(settings.redis, settings.dedup.lookback_hours)
     crypto_client = build_crypto_client(settings, http_session)
 
     try:
@@ -225,6 +229,7 @@ async def run() -> None:
             storage,
             translations,
             language_cache,
+            dedup_index,
             crypto_client,
         )
 
@@ -258,6 +263,7 @@ async def run() -> None:
         await bot.session.close()
         await limiter.close()
         await language_cache.close()
+        await dedup_index.close()
         await storage.close()
         await database.dispose()
         logger.info("Приложение остановлено.")
