@@ -728,6 +728,53 @@ async def test_critical_refusal_shows_alert_on_button(
     )
 
 
+
+async def test_trial_offer_and_grant_use_separate_locks() -> None:
+    """Показ предложения и выдача триала не должны делить блокировку.
+
+    Регрессия. Когда оба хендлера были помечены одним именем, пауза после
+    показа предложения блокировала приём номера телефона: человек жмёт
+    «Поделиться номером» через секунду-две, то есть внутри паузы, и
+    основной сценарий выдачи пробного периода переставал работать.
+
+    Защита при этом нужна обоим: при отключённом запросе контакта триал
+    выдаётся прямо во входном хендлере, без второго шага.
+    """
+    from tg_bot.handlers.trial import router
+
+    handlers = list(router.message.handlers) + list(router.callback_query.handlers)
+    names = {
+        handler.callback.__name__: handler.flags[CRITICAL_FLAG].name
+        for handler in handlers
+        if CRITICAL_FLAG in handler.flags
+    }
+
+    assert names.get("process_contact"), "Выдача триала обязана быть защищена"
+    assert names.get("cmd_trial"), "Вход в сценарий тоже защищается"
+    assert names["cmd_trial"] != names["process_contact"], (
+        f"Вход и выдача делят имя {names['cmd_trial']!r} — пауза после "
+        "предложения заблокирует приём контакта"
+    )
+    assert names.get("start_trial") == names["cmd_trial"], (
+        "Оба входа в сценарий должны делить одну блокировку между собой"
+    )
+
+
+async def test_invoice_handler_is_marked_critical() -> None:
+    """Выставление счёта — критическое действие, повтор создаёт второй счёт."""
+    from tg_bot.handlers.billing import router
+
+    marked = {
+        handler.callback.__name__
+        for handler in router.callback_query.handlers
+        if CRITICAL_FLAG in handler.flags
+    }
+
+    assert "send_invoice" in marked, (
+        "Хендлер выставления счёта должен быть помечен critical()"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Настройки и флаги
 # --------------------------------------------------------------------------- #

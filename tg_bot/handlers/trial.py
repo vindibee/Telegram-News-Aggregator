@@ -44,11 +44,17 @@ router = Router(name="trial")
 
 
 
-# Оба входа в выдачу триала делят одно имя действия: активировать
-# пробный период дважды нельзя ни командой, ни кнопкой.
+# У входа в сценарий и у самой выдачи имена действий РАЗНЫЕ, и это
+# принципиально. Общее имя означало бы, что пауза после показа
+# предложения блокирует приём номера телефона: человек нажимает
+# «Поделиться номером» через секунду-две, то есть внутри паузы, и
+# основной сценарий выдачи триала переставал работать.
+#
+# Защищать вход всё равно нужно: при TRIAL_REQUIRE_CONTACT=false
+# триал выдаётся прямо здесь, без второго шага.
 @router.message(
     Command("trial"),
-    **merge(rate_limit(3, 300, scope="trial"), critical("trial")),
+    **merge(rate_limit(3, 300, scope="trial"), critical("trial_offer")),
 )
 async def cmd_trial(
     message: Message,
@@ -64,7 +70,7 @@ async def cmd_trial(
 
 @router.callback_query(
     MenuCB.filter(F.action == ACTION_TRIAL),
-    **merge(rate_limit(3, 300, scope="trial"), critical("trial")),
+    **merge(rate_limit(3, 300, scope="trial"), critical("trial_offer")),
 )
 async def start_trial(
     callback: CallbackQuery,
