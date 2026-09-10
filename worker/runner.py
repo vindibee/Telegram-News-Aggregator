@@ -109,6 +109,12 @@ class TaskRunner:
             не дала бы процессу остановиться.
         """
         self._stopping.set()
+        if not self._scheduler.running:
+            # Планировщик мог не запуститься вовсе — например, старт упал на
+            # проверке зависимостей. Тогда pause()/shutdown() бросили бы
+            # SchedulerNotRunningError и подменили исходную причину сбоя.
+            logger.debug("Планировщик не запускался, останавливать нечего.")
+            return
         self._scheduler.pause()
 
         pending = tuple(self._running)

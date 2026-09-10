@@ -20,7 +20,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from core.config import ConfigError, Settings, load_settings
 from core.logger import get_logger, setup_logging
-from db.database import Database
+from db.database import Database, DatabaseNotReadyError
 from db.uow import UnitOfWorkFactory
 from services.dedup import DedupConfig
 from services.media import MediaDownloader
@@ -163,6 +163,11 @@ async def run() -> None:
         # Схема БД разворачивается миграциями Alembic ("alembic upgrade head"),
         # а не приложением: приложение, меняющее схему на старте, ломает
         # деплой при нескольких репликах и не даёт откатиться.
+        # Схема проверяется до старта поллинга: иначе бот «успешно»
+        # запустится с недоступной базой и будет отвечать ошибкой на
+        # каждое сообщение, а причина останется невидимой.
+        await database.check_ready()
+
         dispatcher = build_dispatcher(settings, database, http_session, limiter, storage)
 
         me = await bot.get_me()
@@ -192,6 +197,10 @@ def main() -> int:
         setup_logging("INFO")
         logger.critical("Ошибка конфигурации: %s", exc)
         return 2
+    except DatabaseNotReadyError as exc:
+        setup_logging("INFO")
+        logger.critical("База данных не готова: %s", exc)
+        return 3
     except (KeyboardInterrupt, SystemExit):
         logger.info("Бот остановлен пользователем.")
     except Exception as exc:  # noqa: BLE001 - последний рубеж перед падением процесса

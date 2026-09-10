@@ -21,7 +21,7 @@ from aiogram.enums import ParseMode
 
 from core.config import ConfigError, Settings, load_settings
 from core.logger import get_logger, setup_logging
-from db.database import Database
+from db.database import Database, DatabaseNotReadyError
 from db.uow import UnitOfWorkFactory
 from services.notifier import TelegramNotifier
 from services.ratelimit.base import RateLimitBackend
@@ -88,6 +88,17 @@ async def run() -> None:
     stop_event = asyncio.Event()
     _install_signal_handlers(stop_event)
 
+    # Проверка до создания планировщика: задачи ходят в базу по расписанию,
+    # и без неё первая ошибка всплыла бы только через интервал и лишь в логе
+    # задачи. Останавливать здесь ещё нечего, поэтому она вне try.
+    try:
+        await database.check_ready()
+    except DatabaseNotReadyError:
+        await bot.session.close()
+        await limiter.close()
+        await database.dispose()
+        raise
+
     runner = build_runner(settings, database, notifier)
     runner.schedule()
 
@@ -112,6 +123,10 @@ def main() -> int:
         setup_logging("INFO")
         logger.critical("Ошибка конфигурации: %s", exc)
         return 2
+    except DatabaseNotReadyError as exc:
+        setup_logging("INFO")
+        logger.critical("База данных не готова: %s", exc)
+        return 3
     except (KeyboardInterrupt, SystemExit):
         logger.info("Воркер остановлен пользователем.")
     except Exception as exc:  # noqa: BLE001 - последний рубеж перед падением процесса
