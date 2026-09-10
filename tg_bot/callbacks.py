@@ -59,6 +59,13 @@ class KeywordActionCB(CallbackData, prefix="kw"):
     kind: str
 
 
+class PayMethodCB(CallbackData, prefix="pay"):
+    """Выбор способа оплаты выбранного тарифа."""
+
+    method: str
+    option_id: str
+
+
 class LanguageCB(CallbackData, prefix="lang"):
     """Выбрать язык интерфейса."""
 
@@ -94,6 +101,10 @@ SECTION_SUBSCRIPTION = "subscription"
 CHANNEL_ADD = "add"
 CHANNEL_DELETE = "del"
 CHANNEL_VERIFY = "check"
+
+#: Способы оплаты.
+PAY_STARS = "stars"
+PAY_CRYPTO = "crypto"
 
 #: Действия над фильтром.
 KEYWORD_ADD = "add"

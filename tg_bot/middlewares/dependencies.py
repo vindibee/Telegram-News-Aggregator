@@ -12,7 +12,7 @@ from aiogram.types import TelegramObject
 from core.config import ParserConfig, TrialConfig
 from core.logger import get_logger
 from db.uow import UnitOfWorkFactory
-from services.billing import BillingService
+from services.billing import BillingService, CryptoBotClient
 from services.dedup import DedupConfig
 from services.news_service import NewsService
 from services.parser import TelegramWebParser
@@ -42,6 +42,8 @@ class DependenciesMiddleware(BaseMiddleware):
         invoice_ttl: timedelta,
         dedup_config: DedupConfig,
         trial_config: TrialConfig,
+        crypto_client: CryptoBotClient | None = None,
+        crypto_invoice_ttl: timedelta = timedelta(hours=1),
     ) -> None:
         self._uow_factory = uow_factory
         self._parser = parser
@@ -49,6 +51,8 @@ class DependenciesMiddleware(BaseMiddleware):
         self._invoice_ttl = invoice_ttl
         self._dedup_config = dedup_config
         self._trial_config = trial_config
+        self._crypto_client = crypto_client
+        self._crypto_invoice_ttl = crypto_invoice_ttl
 
     async def __call__(
         self,
@@ -62,7 +66,12 @@ class DependenciesMiddleware(BaseMiddleware):
             # для проверки канала до того, как появится что показывать.
             data["parser"] = self._parser
             data["service"] = NewsService(uow, self._parser, self._parser_config, self._dedup_config)
-            data["billing"] = BillingService(uow, invoice_ttl=self._invoice_ttl)
+            data["billing"] = BillingService(
+                uow,
+                invoice_ttl=self._invoice_ttl,
+                crypto=self._crypto_client,
+                crypto_invoice_ttl=self._crypto_invoice_ttl,
+            )
             data["trial"] = TrialService(uow, self._trial_config)
             result = await handler(event, data)
             await uow.commit()

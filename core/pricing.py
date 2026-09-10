@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Final
 
 from db.enums import SubscriptionPlan
@@ -20,6 +21,12 @@ STARS_CURRENCY: Final[str] = "XTR"
 MIN_STARS_AMOUNT: Final[int] = 1
 MAX_STARS_AMOUNT: Final[int] = 10_000
 
+#: Криптовалюта, в которой выставляются счета CryptoBot.
+CRYPTO_ASSET: Final[str] = "USDT"
+
+#: Нижняя граница суммы криптосчёта: комиссия сети съедает меньшие.
+MIN_CRYPTO_AMOUNT: Final[Decimal] = Decimal("0.10")
+
 
 @dataclass(frozen=True, slots=True)
 class PlanOption:
@@ -30,6 +37,9 @@ class PlanOption:
     title: str
     description: str
     stars: int
+    #: Цена в USDT. Хранится строкой и превращается в Decimal: запись
+    #: цены числом с плавающей точкой теряет копейки уже на литерале.
+    usdt: str
     period_days: int
     features: tuple[str, ...] = ()
 
@@ -41,6 +51,16 @@ class PlanOption:
             )
         if self.period_days < 1:
             raise ValueError(f"Период тарифа {self.id} должен быть не меньше суток.")
+        if self.crypto_amount < MIN_CRYPTO_AMOUNT:
+            raise ValueError(
+                f"Цена тарифа {self.id} в {CRYPTO_ASSET} должна быть не меньше "
+                f"{MIN_CRYPTO_AMOUNT}, получено: {self.usdt}"
+            )
+
+    @property
+    def crypto_amount(self) -> Decimal:
+        """Цена в криптовалюте как точное десятичное число."""
+        return Decimal(self.usdt)
 
     @property
     def stars_per_month(self) -> float:
@@ -57,6 +77,7 @@ PLAN_OPTIONS: Final[tuple[PlanOption, ...]] = (
         title="Pro на месяц",
         description="Полный доступ к агрегатору новостей на 30 дней.",
         stars=150,
+        usdt="2.50",
         period_days=30,
         features=("Все каналы", "Поиск по архиву", "Уведомления о свежих записях"),
     ),
@@ -66,6 +87,7 @@ PLAN_OPTIONS: Final[tuple[PlanOption, ...]] = (
         title="Pro на год",
         description="Полный доступ к агрегатору новостей на 365 дней.",
         stars=1500,
+        usdt="25.00",
         period_days=365,
         features=("Всё из месячного тарифа", "Два месяца в подарок"),
     ),
@@ -75,6 +97,7 @@ PLAN_OPTIONS: Final[tuple[PlanOption, ...]] = (
         title="Business на месяц",
         description="Командный доступ и выгрузка данных на 30 дней.",
         stars=500,
+        usdt="8.00",
         period_days=30,
         features=("Всё из Pro", "Выгрузка в CSV", "Приоритетная поддержка"),
     ),

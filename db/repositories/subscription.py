@@ -262,7 +262,7 @@ class SubscriptionRepository(BaseRepository[Subscription]):
             logger.info(
                 "Платёж id=%s уже учтён, повторное начисление не выполняется", payment_id
             )
-            subscription = await self.get(subscription_id)
+            subscription = await self.get_by_id(subscription_id)
             return GrantResult(applied=False, subscription=subscription)
 
         if not extend:
@@ -270,7 +270,7 @@ class SubscriptionRepository(BaseRepository[Subscription]):
                 "Платёж id=%s зафиксирован без продления: период уже включён в подписку id=%s",
                 payment_id, subscription_id,
             )
-            subscription = await self.get(subscription_id)
+            subscription = await self.get_by_id(subscription_id)
             return GrantResult(applied=True, subscription=subscription, event_id=event_id)
 
         values: dict[str, Any] = {

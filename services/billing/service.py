@@ -26,10 +26,11 @@ from decimal import Decimal
 from typing import Any, Final
 
 from core.logger import get_logger
-from core.pricing import STARS_CURRENCY, PlanOption, get_plan_option
+from core.pricing import CRYPTO_ASSET, STARS_CURRENCY, PlanOption, get_plan_option
 from db.enums import PaymentProvider, PaymentStatus, SubscriptionPlan, SubscriptionSource, SubscriptionStatus
 from db.models import Payment, User
 from db.uow import UnitOfWork
+from services.billing.crypto import CryptoBotClient, CryptoBotError
 from services.billing.errors import (
     PaymentMismatchError,
     PaymentNotFoundError,
@@ -44,6 +45,10 @@ DEFAULT_INVOICE_TTL: Final[timedelta] = timedelta(minutes=15)
 
 #: Сколько неоплаченных счетов допустимо держать одновременно.
 MAX_PENDING_INVOICES: Final[int] = 3
+
+#: Сколько живёт криптосчёт. Больше, чем у звёзд: перевод в сети
+#: подтверждается не мгновенно, и пятнадцати минут человеку не хватит.
+DEFAULT_CRYPTO_TTL: Final[timedelta] = timedelta(hours=1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +66,18 @@ class InvoiceRequest:
     currency: str
     label: str
     amount: int
+
+
+@dataclass(frozen=True, slots=True)
+class CryptoInvoiceRequest:
+    """Данные криптосчёта для показа пользователю."""
+
+    payment_id: int
+    #: Ссылка, по которой открывается оплата в CryptoBot.
+    pay_url: str
+    asset: str
+    amount: Decimal
+    title: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,10 +116,19 @@ class BillingService:
         *,
         invoice_ttl: timedelta = DEFAULT_INVOICE_TTL,
         max_pending: int = MAX_PENDING_INVOICES,
+        crypto: CryptoBotClient | None = None,
+        crypto_invoice_ttl: timedelta = DEFAULT_CRYPTO_TTL,
     ) -> None:
         self._uow = uow
         self._invoice_ttl = invoice_ttl
         self._max_pending = max_pending
+        self._crypto = crypto
+        self._crypto_invoice_ttl = crypto_invoice_ttl
+
+    @property
+    def crypto_enabled(self) -> bool:
+        """Настроена ли оплата криптовалютой."""
+        return self._crypto is not None
 
     # ------------------------------------------------------------ шаг 1
     async def create_invoice(self, user: User, option_id: str) -> InvoiceRequest:
@@ -157,6 +183,180 @@ class BillingService:
             label=option.title,
             amount=option.stars,
         )
+
+    async def create_crypto_invoice(self, user: User, option_id: str) -> CryptoInvoiceRequest:
+        """Выставляет счёт на оплату криптовалютой.
+
+        Порядок обратный привычному: строка ``payments`` создаётся раньше
+        обращения к провайдеру. Иначе счёт мог бы существовать в CryptoBot,
+        не существуя у нас, и пришедший по нему вебхук было бы не к чему
+        привязать — деньги списаны, начислять некому.
+
+        :param user: Плательщик.
+        :param option_id: Идентификатор варианта оплаты из каталога.
+        :return: Данные счёта со ссылкой на оплату.
+        :raises PlanNotFoundError: Неизвестный вариант оплаты.
+        :raises TooManyPendingInvoicesError: Слишком много неоплаченных счетов.
+        :raises CryptoBotError: Провайдер недоступен или отверг запрос.
+        :raises RuntimeError: Оплата криптовалютой не настроена.
+        """
+        if self._crypto is None:
+            raise RuntimeError("Оплата криптовалютой не настроена.")
+
+        option = get_plan_option(option_id)
+        if option is None:
+            logger.warning("Запрошен неизвестный тариф %r пользователем %s", option_id, user.id)
+            raise PlanNotFoundError(option_id)
+
+        pending = await self._uow.payments.count_pending(user.id)
+        if pending >= self._max_pending:
+            logger.warning(
+                "Отказ в криптосчёте: у пользователя %s уже %d незавершённых", user.id, pending
+            )
+            raise TooManyPendingInvoicesError(self._max_pending)
+
+        now = datetime.now(tz=timezone.utc)
+        invoice_id = Payment.generate_invoice_id(prefix="cb")
+        result = await self._uow.payments.create_invoice(
+            user_id=user.id,
+            provider=PaymentProvider.CRYPTO_BOT,
+            invoice_id=invoice_id,
+            idempotency_key=f"crypto:{user.id}:{option.id}:{secrets.token_hex(6)}",
+            amount=option.crypto_amount,
+            currency=CRYPTO_ASSET,
+            plan=option.plan,
+            period_days=option.period_days,
+            expires_at=now + self._crypto_invoice_ttl,
+            payload={"option_id": option.id, "title": option.title},
+        )
+        payment = result.payment
+        # Идентификатор попадает в базу до обращения к провайдеру: без
+        # него нечего было бы искать по вебхуку.
+        await self._uow.flush()
+
+        try:
+            invoice = await self._crypto.create_invoice(
+                asset=CRYPTO_ASSET,
+                amount=option.crypto_amount,
+                payload=invoice_id,
+                description=option.title,
+                expires_in=int(self._crypto_invoice_ttl.total_seconds()),
+            )
+        except CryptoBotError:
+            # Счёт у провайдера не создан — помечаем наш как несостоявшийся,
+            # чтобы он не занимал место в лимите незавершённых.
+            payment.mark_failed("Провайдер не создал счёт")
+            await self._uow.flush()
+            raise
+
+        # Идентификатор счёта провайдера — ключ, по которому придёт вебхук.
+        payment.payload = {**payment.payload, "crypto_invoice_id": invoice.invoice_id}
+        await self._uow.flush()
+
+        logger.info(
+            "Выставлен криптосчёт id=%s пользователю %s: %s %s",
+            payment.id, user.id, option.crypto_amount, CRYPTO_ASSET,
+        )
+        return CryptoInvoiceRequest(
+            payment_id=payment.id,
+            pay_url=invoice.pay_url,
+            asset=CRYPTO_ASSET,
+            amount=option.crypto_amount,
+            title=option.title,
+        )
+
+    async def apply_crypto_payment(
+        self,
+        *,
+        invoice_payload: str,
+        external_id: str,
+        amount: Decimal,
+        asset: str,
+        raw_payload: dict[str, Any] | None = None,
+    ) -> PaymentOutcome:
+        """Учитывает оплату криптовалютой и начисляет дни подписки.
+
+        Механизм идемпотентности тот же, что и у звёзд, и это не
+        совпадение: ``confirm_payment`` блокирует строку платежа, а
+        ``apply_payment_grant`` опирается на уникальность ``payment_id`` в
+        журнале подписки. Оба ограничения не зависят от провайдера,
+        поэтому повторная доставка вебхука — а CryptoBot повторяет его,
+        пока не получит 200, — не начислит дни второй раз.
+
+        :param invoice_payload: Наш идентификатор счёта из поля ``payload``.
+        :param external_id: Идентификатор счёта в CryptoBot.
+        :param amount: Фактически оплаченная сумма.
+        :param asset: Криптовалюта платежа.
+        :param raw_payload: Сырое событие для аудита.
+        :return: Итог с новой датой окончания подписки.
+        :raises PaymentNotFoundError: Счёт не найден.
+        :raises PaymentMismatchError: Сумма или валюта не совпали со счётом.
+        """
+        now = datetime.now(tz=timezone.utc)
+        payment, _ = await self._uow.payments.confirm_payment(
+            provider=PaymentProvider.CRYPTO_BOT,
+            invoice_id=invoice_payload,
+            external_id=external_id,
+            paid_at=now,
+            payload=raw_payload or {},
+        )
+        if payment is None:
+            logger.error(
+                "Криптооплата по неизвестному счёту: payload=%r invoice=%s",
+                invoice_payload, external_id,
+            )
+            raise PaymentNotFoundError(invoice_payload)
+
+        self._ensure_crypto_matches(payment, amount, asset)
+
+        subscription_result = await self._uow.subscriptions.get_or_create_live(
+            payment.user_id,
+            plan=payment.plan,
+            source=SubscriptionSource.PAYMENT,
+            status=SubscriptionStatus.ACTIVE,
+            period_days=payment.period_days,
+            now=now,
+        )
+        grant = await self._uow.subscriptions.apply_payment_grant(
+            payment_id=payment.id,
+            subscription_id=subscription_result.subscription.id,
+            user_id=payment.user_id,
+            days=payment.period_days,
+            plan=payment.plan,
+            payload={"crypto_invoice_id": external_id, "asset": asset},
+            extend=not subscription_result.created,
+        )
+
+        outcome = PaymentOutcome(
+            payment_id=payment.id,
+            plan=payment.plan,
+            days_granted=payment.period_days if grant.applied else 0,
+            expires_at=grant.expires_at or subscription_result.subscription.expires_at,
+            newly_applied=grant.applied,
+        )
+        logger.info(
+            "Криптооплата счёта id=%s учтена: план %s, подписка до %s, начислено=%s",
+            payment.id, payment.plan, outcome.expires_at, outcome.newly_applied,
+        )
+        return outcome
+
+    @staticmethod
+    def _ensure_crypto_matches(payment: Payment, amount: Decimal, asset: str) -> None:
+        """Сверяет фактический перевод с выставленным счётом.
+
+        Недоплата не должна открывать подписку: сумма приходит из вебхука,
+        а он лишь сообщает о факте перевода.
+
+        :raises PaymentMismatchError: Валюта или сумма отличаются.
+        """
+        if asset.upper() != payment.currency:
+            raise PaymentMismatchError(
+                f"Валюта платежа {asset} не совпадает со счётом {payment.currency}."
+            )
+        if amount < payment.amount:
+            raise PaymentMismatchError(
+                f"Сумма платежа {amount} меньше суммы счёта {payment.amount}."
+            )
 
     # ------------------------------------------------------------ шаг 2
     async def validate_pre_checkout(

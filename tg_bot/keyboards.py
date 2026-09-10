@@ -21,7 +21,7 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.config import MAX_BUTTON_TEXT_LENGTH, Channel
-from core.pricing import PlanOption
+from core.pricing import CRYPTO_ASSET, PlanOption
 from db.enums import KeywordKind, Language
 from db.models import Post, UserChannel
 from services.i18n import Translator
@@ -36,6 +36,8 @@ from tg_bot.callbacks import (
     CHANNEL_VERIFY,
     KEYWORD_ADD,
     KEYWORD_CLEAR,
+    PAY_CRYPTO,
+    PAY_STARS,
     SECTION_KEYWORDS,
     SECTION_MENU,
     SECTION_SOURCES,
@@ -46,6 +48,7 @@ from tg_bot.callbacks import (
     ChannelCB,
     KeywordActionCB,
     LanguageCB,
+    PayMethodCB,
     MenuCB,
     PlanCB,
     PostCB,
@@ -138,6 +141,45 @@ def kb_plans(options: Sequence[PlanOption], i18n: Translator) -> InlineKeyboardM
             callback_data=PlanCB(option_id=option.id),
         )
     builder.button(text=i18n("buttons.back"), callback_data=MenuCB(action=ACTION_CHANNELS))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def kb_pay_methods(
+    option: PlanOption,
+    i18n: Translator,
+    *,
+    crypto_enabled: bool,
+) -> InlineKeyboardMarkup:
+    """Клавиатура выбора способа оплаты.
+
+    Криптовалюта показывается только когда она настроена: кнопка,
+    ведущая в сообщение «временно недоступно», хуже её отсутствия.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=i18n("billing.pay_stars", amount=f"{option.stars} ⭐"),
+        callback_data=PayMethodCB(method=PAY_STARS, option_id=option.id),
+    )
+    if crypto_enabled:
+        builder.button(
+            text=i18n(
+                "billing.pay_crypto",
+                amount=option.usdt,
+                asset=CRYPTO_ASSET,
+            ),
+            callback_data=PayMethodCB(method=PAY_CRYPTO, option_id=option.id),
+        )
+    builder.button(text=i18n("buttons.back"), callback_data=MenuCB(action=ACTION_PLANS))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def kb_crypto_invoice(pay_url: str, i18n: Translator) -> InlineKeyboardMarkup:
+    """Клавиатура со ссылкой на оплату счёта в CryptoBot."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text=i18n("billing.crypto_button"), url=pay_url)
+    builder.button(text=i18n("buttons.my_subscription"), callback_data=MenuCB(action=ACTION_SUBSCRIPTION))
     builder.adjust(1)
     return builder.as_markup()
 

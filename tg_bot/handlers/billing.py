@@ -17,15 +17,28 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, LabeledPrice, Mes
 
 from core.config import Settings
 from core.logger import get_logger
-from core.pricing import PLAN_OPTIONS
+from core.pricing import PLAN_OPTIONS, get_plan_option
 from db.models import User
 from db.uow import UnitOfWork
-from services.billing import BillingError, BillingService
+from services.billing import BillingError, BillingService, CryptoBotError
 from services.i18n import Translator
 from services.trial import TrialService
-from tg_bot.callbacks import ACTION_PLANS, ACTION_SUBSCRIPTION, MenuCB, PlanCB
+from tg_bot.callbacks import (
+    ACTION_PLANS,
+    ACTION_SUBSCRIPTION,
+    PAY_CRYPTO,
+    MenuCB,
+    PayMethodCB,
+    PlanCB,
+)
 from tg_bot.flags import rate_limit, skip_throttling
-from tg_bot.keyboards import kb_after_payment, kb_plans, kb_subscription
+from tg_bot.keyboards import (
+    kb_after_payment,
+    kb_crypto_invoice,
+    kb_pay_methods,
+    kb_plans,
+    kb_subscription,
+)
 from tg_bot.utils import get_message, safe_edit_text
 
 logger = get_logger(__name__)
@@ -86,24 +99,67 @@ async def show_subscription(
     await safe_edit_text(target, text, markup)
 
 
-# Выставление счёта обращается к Bot API и создаёт строку в БД, поэтому
-# лимит здесь строже общего для кнопок.
-@router.callback_query(PlanCB.filter(), **rate_limit(5, 60, scope="invoice"))
-async def send_invoice(
+# Выбор способа оплаты дешёвый: обращений к внешним сервисам нет,
+# поэтому отдельного лимита ему не нужно.
+@router.callback_query(PlanCB.filter())
+async def choose_pay_method(
     callback: CallbackQuery,
     callback_data: PlanCB,
-    user: User,
     billing: BillingService,
     i18n: Translator,
 ) -> None:
-    """Выставляет счёт на выбранный тариф."""
+    """Предлагает выбрать, чем платить за выбранный тариф."""
     await callback.answer()
     target = get_message(callback)
     if target is None:
         return
 
+    option = get_plan_option(callback_data.option_id)
+    if option is None:
+        await callback.answer(i18n("common.stale"), show_alert=True)
+        return
+
+    await safe_edit_text(
+        target,
+        i18n("billing.method_header", title=escape(option.title)),
+        kb_pay_methods(option, i18n, crypto_enabled=billing.crypto_enabled),
+    )
+
+
+# Выставление счёта обращается к внешнему API и создаёт строку в БД,
+# поэтому лимит здесь строже общего для кнопок.
+@router.callback_query(PayMethodCB.filter(), **rate_limit(5, 60, scope="invoice"))
+async def send_invoice(
+    callback: CallbackQuery,
+    callback_data: PayMethodCB,
+    user: User,
+    billing: BillingService,
+    settings: Settings,
+    i18n: Translator,
+) -> None:
+    """Выставляет счёт выбранным способом."""
+    await callback.answer()
+    target = get_message(callback)
+    if target is None:
+        return
+
+    if callback_data.method == PAY_CRYPTO:
+        await _send_crypto_invoice(target, user, callback_data.option_id, billing, settings, i18n)
+        return
+
+    await _send_stars_invoice(target, user, callback_data.option_id, billing, i18n)
+
+
+async def _send_stars_invoice(
+    target: Message,
+    user: User,
+    option_id: str,
+    billing: BillingService,
+    i18n: Translator,
+) -> None:
+    """Отправляет счёт на оплату звёздами."""
     try:
-        invoice = await billing.create_invoice(user, callback_data.option_id)
+        invoice = await billing.create_invoice(user, option_id)
     except BillingError as exc:
         logger.info("Отказ в выставлении счёта пользователю %s: %s", user.id, exc)
         await target.answer(i18n(exc.key))
@@ -122,6 +178,48 @@ async def send_invoice(
     except TelegramAPIError as exc:
         logger.error("Не удалось отправить счёт id=%s: %s", invoice.payment_id, exc)
         await target.answer(i18n("billing.invoice_failed"))
+
+
+async def _send_crypto_invoice(
+    target: Message,
+    user: User,
+    option_id: str,
+    billing: BillingService,
+    settings: Settings,
+    i18n: Translator,
+) -> None:
+    """Создаёт счёт в CryptoBot и присылает ссылку на оплату.
+
+    Недоступность провайдера не должна выглядеть как поломка бота:
+    пользователю предлагается заплатить звёздами, а подробности сбоя
+    остаются в логе.
+    """
+    try:
+        invoice = await billing.create_crypto_invoice(user, option_id)
+    except BillingError as exc:
+        logger.info("Отказ в криптосчёте пользователю %s: %s", user.id, exc)
+        await target.answer(i18n(exc.key))
+        return
+    except CryptoBotError as exc:
+        logger.error("CryptoBot недоступен при выставлении счёта пользователю %s: %s", user.id, exc)
+        await target.answer(i18n("billing.crypto_unavailable"))
+        return
+    except RuntimeError:
+        logger.error("Запрошена криптооплата при выключенном провайдере")
+        await target.answer(i18n("billing.crypto_unavailable"))
+        return
+
+    ttl_minutes = settings.crypto.invoice_ttl_minutes
+    await target.answer(
+        i18n(
+            "billing.crypto_invoice",
+            title=escape(invoice.title),
+            amount=invoice.amount,
+            asset=escape(invoice.asset),
+            ttl=i18n.plural("units.minutes", ttl_minutes),
+        ),
+        reply_markup=kb_crypto_invoice(invoice.pay_url, i18n),
+    )
 
 
 # Telegram ждёт ответ не дольше 10 секунд и отменяет платёж при опоздании,

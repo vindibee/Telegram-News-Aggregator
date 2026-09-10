@@ -52,6 +52,12 @@
         "one": "{count} new post",
         "other": "{count} new posts"
       }
+    },
+    "minutes": {
+      "__plural__": {
+        "one": "{count} minute",
+        "other": "{count} minutes"
+      }
     }
   },
   "start": {
@@ -99,7 +105,13 @@
       "currency_mismatch": "Payment currency does not match the invoice.",
       "amount_mismatch": "Payment amount does not match the invoice.",
       "declined": "Payment declined."
-    }
+    },
+    "method_header": "How would you like to pay for <b>{title}</b>?",
+    "pay_stars": "⭐ Stars — {amount}",
+    "pay_crypto": "💎 Crypto — {amount} {asset}",
+    "crypto_invoice": "💎 <b>{title}</b>\n\nAmount due: <b>{amount} {asset}</b>\n\nThe invoice is valid for {ttl}. The subscription starts automatically once the transfer is confirmed.",
+    "crypto_button": "💎 Go to payment",
+    "crypto_unavailable": "❌ Crypto payment is temporarily unavailable. Try later or pay with Stars."
   },
   "trial": {
     "offer": "🎁 <b>Free trial for {days}</b>\n\nFull access to every channel and feature — free, with no charges.\n\nTo rule out repeated activation from several accounts, a phone number is required. Tap the button below — Telegram sends it for you.\n\nThe number is not stored: only an irreversible fingerprint goes into the database.\n\nChanged your mind — send /cancel.",

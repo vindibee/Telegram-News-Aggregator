@@ -194,6 +194,33 @@ class BillingConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class CryptoBotConfig:
+    """Параметры оплаты через CryptoBot.
+
+    Оплата криптовалютой необязательна: без токена раздел просто не
+    показывается, а бот работает на одних звёздах. Так локальный запуск и
+    небольшие установки не требуют регистрации в стороннем сервисе.
+    """
+
+    token: str
+    api_url: str
+    #: Путь вебхука. Совпадает с тем, что указан в настройках CryptoBot.
+    webhook_path: str
+    #: Адрес и порт, на которых поднимается приёмник вебхуков.
+    webhook_host: str
+    webhook_port: int
+    #: Через сколько минут протухает невыплаченный криптосчёт.
+    invoice_ttl_minutes: int
+    #: Таймаут обращения к API, секунды.
+    request_timeout: float
+
+    @property
+    def enabled(self) -> bool:
+        """Настроена ли оплата криптовалютой."""
+        return bool(self.token)
+
+
+@dataclass(frozen=True, slots=True)
 class TrialConfig:
     """Параметры пробного периода.
 
@@ -267,6 +294,7 @@ class Settings:
     redis: RedisConfig
     rate_limit: RateLimitConfig
     billing: BillingConfig
+    crypto: CryptoBotConfig
     worker: WorkerConfig
     trial: TrialConfig
     dedup: DedupConfigValues
@@ -364,6 +392,16 @@ def load_settings() -> Settings:
         max_pending_invoices=_get_int("MAX_PENDING_INVOICES", 3, minimum=1),
     )
 
+    crypto = CryptoBotConfig(
+        token=_get_str("CRYPTO_BOT_TOKEN"),
+        api_url=_get_str("CRYPTO_BOT_API_URL", "https://pay.crypt.bot/api"),
+        webhook_path=_get_str("CRYPTO_BOT_WEBHOOK_PATH", "/webhook/cryptobot"),
+        webhook_host=_get_str("CRYPTO_BOT_WEBHOOK_HOST", "0.0.0.0"),
+        webhook_port=_get_int("CRYPTO_BOT_WEBHOOK_PORT", 8080, minimum=1),
+        invoice_ttl_minutes=_get_int("CRYPTO_BOT_INVOICE_TTL_MINUTES", 60, minimum=1),
+        request_timeout=_get_float("CRYPTO_BOT_TIMEOUT", 15.0, minimum=1.0),
+    )
+
     worker = WorkerConfig(
         expiry_notice_hours=_get_int("WORKER_EXPIRY_NOTICE_HOURS", 24, minimum=1),
         expiry_check_interval=_get_int("WORKER_EXPIRY_INTERVAL", 900, minimum=30),
@@ -410,6 +448,7 @@ def load_settings() -> Settings:
         redis=redis,
         rate_limit=rate_limit,
         billing=billing,
+        crypto=crypto,
         worker=worker,
         trial=trial,
         dedup=dedup,

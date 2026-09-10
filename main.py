@@ -22,8 +22,10 @@ from core.config import ConfigError, Settings, load_settings
 from core.logger import get_logger, setup_logging
 from db.database import Database, DatabaseNotReadyError
 from db.uow import UnitOfWorkFactory
+from services.billing import CryptoBotClient
 from services.dedup import DedupConfig
 from services.media import MediaDownloader
+from services.notifier import TelegramNotifier
 from services.parser import TelegramWebParser
 from services.ratelimit.base import RateLimitBackend
 from services.i18n import LanguageCache, TranslationManager, build_language_cache
@@ -38,6 +40,7 @@ from tg_bot.middlewares import (
     UserContextMiddleware,
 )
 from tg_bot.views import PostRenderer
+from web import build_web_app, start_web_app
 
 logger = get_logger(__name__)
 
@@ -76,6 +79,33 @@ def build_dedup_config(settings: Settings) -> DedupConfig:
     )
 
 
+def build_crypto_client(
+    settings: Settings,
+    http_session: aiohttp.ClientSession,
+) -> CryptoBotClient | None:
+    """Создаёт клиент CryptoBot, если оплата криптовалютой настроена.
+
+    Отсутствие токена — не ошибка: бот вполне работает на одних звёздах,
+    и требовать регистрации в стороннем сервисе ради локального запуска
+    было бы неуместно.
+
+    :param settings: Настройки приложения.
+    :param http_session: Общая HTTP-сессия.
+    :return: Клиент либо ``None``.
+    """
+    if not settings.crypto.enabled:
+        logger.info("CRYPTO_BOT_TOKEN не задан: оплата криптовалютой отключена.")
+        return None
+
+    logger.info("Оплата криптовалютой включена (%s).", settings.crypto.api_url)
+    return CryptoBotClient(
+        http_session,
+        settings.crypto.token,
+        api_url=settings.crypto.api_url,
+        timeout=settings.crypto.request_timeout,
+    )
+
+
 def build_fsm_storage(settings: Settings) -> BaseStorage:
     """Создаёт хранилище состояний FSM.
 
@@ -100,6 +130,7 @@ def build_dispatcher(
     storage: BaseStorage,
     translations: TranslationManager,
     language_cache: LanguageCache,
+    crypto_client: CryptoBotClient | None = None,
 ) -> Dispatcher:
     """Собирает диспетчер со всеми зависимостями, middleware и хендлерами."""
     parser = TelegramWebParser(http_session, settings.parser)
@@ -124,6 +155,8 @@ def build_dispatcher(
             invoice_ttl=timedelta(minutes=settings.billing.invoice_ttl_minutes),
             dedup_config=build_dedup_config(settings),
             trial_config=settings.trial,
+            crypto_client=crypto_client,
+            crypto_invoice_ttl=timedelta(minutes=settings.crypto.invoice_ttl_minutes),
         )
     )
     # Строго после зависимостей: регистрация пользователя работает в уже
@@ -173,6 +206,7 @@ async def run() -> None:
     # ронять запуск, а не всплывать в чате у пользователя.
     translations = TranslationManager.from_directory()
     language_cache = build_language_cache(settings.redis)
+    crypto_client = build_crypto_client(settings, http_session)
 
     try:
         # Схема БД разворачивается миграциями Alembic ("alembic upgrade head"),
@@ -184,8 +218,28 @@ async def run() -> None:
         await database.check_ready()
 
         dispatcher = build_dispatcher(
-            settings, database, http_session, limiter, storage, translations, language_cache
+            settings,
+            database,
+            http_session,
+            limiter,
+            storage,
+            translations,
+            language_cache,
+            crypto_client,
         )
+
+        # Приёмник вебхуков поднимается только когда криптооплата
+        # настроена: открывать порт «на всякий случай» незачем.
+        if crypto_client is not None:
+            web_runner = await start_web_app(
+                build_web_app(
+                    settings=settings,
+                    uow_factory=UnitOfWorkFactory(database.session_factory),
+                    notifier=TelegramNotifier(bot, limiter),
+                    translations=translations,
+                ),
+                settings.crypto,
+            )
 
         me = await bot.get_me()
         logger.info("Бот @%s запущен и готов к работе.", me.username)
@@ -198,6 +252,8 @@ async def run() -> None:
         )
     finally:
         logger.info("Остановка: освобождаю ресурсы…")
+        if web_runner is not None:
+            await web_runner.cleanup()
         await http_session.close()
         await bot.session.close()
         await limiter.close()
