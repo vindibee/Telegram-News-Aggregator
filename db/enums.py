@@ -14,6 +14,82 @@ from typing import Final
 from sqlalchemy import Enum as SAEnum
 
 
+class Language(StrEnum):
+    """Язык интерфейса.
+
+    Отличается от ``users.language_code``: тот приходит от клиента Telegram
+    и говорит лишь о настройках устройства, а этот — осознанный выбор
+    пользователя. Смешивать их нельзя: человек с английской системой
+    вполне может хотеть русский интерфейс, и подсказка клиента не должна
+    молча перекрывать его решение.
+    """
+
+    RU = "ru"
+    EN = "en"
+
+    @classmethod
+    def default(cls) -> Language:
+        """Язык по умолчанию."""
+        return cls.RU
+
+    @classmethod
+    def from_telegram(cls, code: str | None) -> Language:
+        """Подбирает язык интерфейса по коду клиента Telegram.
+
+        Используется только при первом появлении пользователя — как
+        разумная догадка до того, как он выберет язык сам.
+
+        :param code: Значение ``language_code`` из Telegram (``ru``, ``en-US``).
+        :return: Поддерживаемый язык; при неизвестном коде — язык по умолчанию.
+        """
+        if not code:
+            return cls.default()
+        # Telegram присылает и "en", и "en-US" — регион для выбора языка
+        # интерфейса значения не имеет.
+        primary = code.strip().lower().split("-", 1)[0]
+        try:
+            return cls(primary)
+        except ValueError:
+            return cls.default()
+
+
+class ChannelKind(StrEnum):
+    """Роль канала в рабочем процессе пользователя.
+
+    Источники читаются парсером, цели используются для публикации. Один и
+    тот же канал может быть и тем и другим, поэтому роль — часть ключа, а
+    не свойство канала.
+    """
+
+    SOURCE = "source"
+    TARGET = "target"
+
+
+class ReferralStatus(StrEnum):
+    """Состояние реферального начисления.
+
+    Приглашение и вознаграждение разнесены во времени: бонус выдаётся не
+    за регистрацию (иначе его фармят ботами), а после первой оплаты
+    приглашённого.
+    """
+
+    PENDING = "pending"
+    QUALIFIED = "qualified"
+    REWARDED = "rewarded"
+    REJECTED = "rejected"
+
+
+class PromocodeKind(StrEnum):
+    """Что даёт промокод.
+
+    ``value`` интерпретируется по типу: для ``BONUS_DAYS`` это дни, для
+    ``DISCOUNT_PERCENT`` — проценты скидки.
+    """
+
+    BONUS_DAYS = "bonus_days"
+    DISCOUNT_PERCENT = "discount_percent"
+
+
 class SubscriptionPlan(StrEnum):
     """Тарифный план.
 
@@ -118,6 +194,11 @@ def pg_enum(enum_cls: type[StrEnum], name: str) -> SAEnum:
 #: Терминальные состояния платежа — из них переходы запрещены.
 FINAL_PAYMENT_STATUSES: Final[frozenset[PaymentStatus]] = frozenset(
     {PaymentStatus.SUCCEEDED, PaymentStatus.FAILED, PaymentStatus.REFUNDED, PaymentStatus.EXPIRED}
+)
+
+#: Состояния реферала, из которых повторное начисление невозможно.
+FINAL_REFERRAL_STATUSES: Final[frozenset[ReferralStatus]] = frozenset(
+    {ReferralStatus.REWARDED, ReferralStatus.REJECTED}
 )
 
 #: Статусы, при которых подписка считается действующей.

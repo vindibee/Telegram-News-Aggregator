@@ -6,19 +6,31 @@
 отсюда.
 """
 
+from db.models.channel import UserChannel
 from db.models.payment import Payment
 from db.models.post import FTS_CONFIG, SIMHASH_BANDS, Post
+from db.models.promo import PROMOCODE_LENGTH, Promocode, PromocodeRedemption
+from db.models.referral import Referral
 from db.models.subscription import Subscription, SubscriptionEvent
+from db.models.tracking import LINK_TOKEN_LENGTH, ClickLog, TrackedLink
 from db.models.user import REFERRAL_CODE_LENGTH, TrialClaim, User
 
 __all__ = [
     "FTS_CONFIG",
+    "LINK_TOKEN_LENGTH",
+    "PROMOCODE_LENGTH",
     "REFERRAL_CODE_LENGTH",
     "SIMHASH_BANDS",
+    "ClickLog",
     "Payment",
     "Post",
+    "Promocode",
+    "PromocodeRedemption",
+    "Referral",
     "Subscription",
     "SubscriptionEvent",
+    "TrackedLink",
     "TrialClaim",
     "User",
+    "UserChannel",
 ]

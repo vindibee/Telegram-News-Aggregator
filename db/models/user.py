@@ -24,13 +24,17 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.logger import get_logger
 from db.base import Base
-from db.enums import TrialFingerprintKind, pg_enum
+from db.enums import Language, TrialFingerprintKind, pg_enum
 from db.exceptions import TrialAlreadyUsedError
 from db.mixins import IdMixin, TimestampMixin
 
 if TYPE_CHECKING:
+    from db.models.channel import UserChannel
     from db.models.payment import Payment
+    from db.models.promo import PromocodeRedemption
+    from db.models.referral import Referral
     from db.models.subscription import Subscription
+    from db.models.tracking import TrackedLink
 
 logger = get_logger(__name__)
 
@@ -55,7 +59,17 @@ class User(Base, IdMixin, TimestampMixin):
     username: Mapped[str | None] = mapped_column(String(32), nullable=True)
     first_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: Языковая подсказка от клиента Telegram: чем пользуется устройство.
     language_code: Mapped[str | None] = mapped_column(String(8), nullable=True)
+
+    #: Выбранный язык интерфейса. Отдельно от ``language_code``: настройка
+    #: устройства не должна молча перекрывать осознанный выбор человека.
+    language: Mapped[Language] = mapped_column(
+        pg_enum(Language, "user_language"),
+        nullable=False,
+        default=Language.default(),
+        server_default=Language.default().value,
+    )
 
     is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     is_banned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
@@ -99,6 +113,40 @@ class User(Base, IdMixin, TimestampMixin):
         back_populates="user",
         lazy="raise",
     )
+    channels: Mapped[list[UserChannel]] = relationship(
+        "UserChannel",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="raise",
+    )
+    #: Приглашения, отправленные этим пользователем.
+    referrals_made: Mapped[list[Referral]] = relationship(
+        "Referral",
+        back_populates="referrer",
+        foreign_keys="Referral.referrer_id",
+        cascade="all, delete-orphan",
+        lazy="raise",
+    )
+    #: Приглашение, по которому пришёл сам пользователь (не больше одного).
+    referral_source: Mapped[Referral | None] = relationship(
+        "Referral",
+        back_populates="referred",
+        foreign_keys="Referral.referred_id",
+        uselist=False,
+        lazy="raise",
+    )
+    promocode_redemptions: Mapped[list[PromocodeRedemption]] = relationship(
+        "PromocodeRedemption",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="raise",
+    )
+    tracked_links: Mapped[list[TrackedLink]] = relationship(
+        "TrackedLink",
+        back_populates="owner",
+        foreign_keys="TrackedLink.owner_id",
+        lazy="raise",
+    )
     trial_claims: Mapped[list[TrialClaim]] = relationship(
         "TrialClaim",
         back_populates="user",
@@ -133,6 +181,18 @@ class User(Base, IdMixin, TimestampMixin):
     def has_used_trial(self) -> bool:
         """Активировал ли пользователь пробный период."""
         return self.trial_activated_at is not None
+
+    def apply_language(self, language: Language) -> bool:
+        """Меняет язык интерфейса.
+
+        :param language: Новый язык.
+        :return: ``True``, если значение действительно изменилось.
+        """
+        if self.language is language:
+            return False
+        logger.info("Язык интерфейса user_id=%s: %s -> %s", self.id, self.language, language)
+        self.language = language
+        return True
 
     def can_start_trial(self) -> bool:
         """Доступен ли пользователю пробный период.
