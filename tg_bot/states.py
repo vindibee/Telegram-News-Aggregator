@@ -43,6 +43,13 @@ class SetKeywordsSG(StatesGroup):
     waiting_for_stop_words = State()
 
 
+class SearchSG(StatesGroup):
+    """Поиск по архиву новостей."""
+
+    #: Ждём поисковый запрос.
+    waiting_for_query = State()
+
+
 class TrialStates(StatesGroup):
     """Активация пробного периода."""
 

@@ -66,6 +66,17 @@ class PayMethodCB(CallbackData, prefix="pay"):
     option_id: str
 
 
+class SearchPageCB(CallbackData, prefix="sp"):
+    """Переход между страницами выдачи.
+
+    Несёт только номер страницы: сам запрос в callback_data не
+    помещается — там 64 байта, а запрос бывает длиннее. Текст
+    запроса хранится в состоянии FSM, где ему и место.
+    """
+
+    page: int
+
+
 class LanguageCB(CallbackData, prefix="lang"):
     """Выбрать язык интерфейса."""
 
@@ -86,6 +97,9 @@ ACTION_TRIAL = "trial"
 
 #: Действие «показать выбор языка».
 ACTION_LANGUAGE = "language"
+
+#: Действие «открыть поиск по архиву».
+ACTION_SEARCH = "search"
 
 #: Действие «открыть личный кабинет».
 ACTION_CABINET = "cabinet"

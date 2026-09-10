@@ -32,7 +32,10 @@
     "add_stop_words": "➕ Stop words",
     "clear_triggers": "🗑 Clear triggers",
     "clear_stop_words": "🗑 Clear stop words",
-    "recheck": "🔄 Check permissions"
+    "recheck": "🔄 Check permissions",
+    "search": "🔎 Search",
+    "prev_page": "◀️ Back",
+    "next_page": "Next ▶️"
   },
   "units": {
     "days": {
@@ -214,5 +217,17 @@
       "none": "💳 <b>No active subscription</b>\n\nSubscribe or activate the free trial."
     },
     "cancelled": "Cancelled."
+  },
+  "search": {
+    "prompt": "🔎 <b>Archive search</b>\n\nSend a query. Morphology works: «releases» finds «release».\n\nExact phrase — in quotes: <code>\"machine learning\"</code>\nExclude a word — with a minus: <code>release -ads</code>\n\nCancel — /cancel.",
+    "results": "🔎 <b>{query}</b> · page {page}",
+    "nothing": "🔎 Nothing found for <b>{query}</b>.\n\nTry different words.",
+    "item": "{index}. <a href=\"{url}\">@{channel}</a> · {date}\n{snippet}",
+    "expired": "The search has expired, start again: /search",
+    "locked": "🔒 <b>Archive search</b>\n\nAvailable with a subscription. Subscribe or activate the free trial.",
+    "errors": {
+      "too_short": "❌ The query is too short — at least 2 characters.",
+      "too_long": "❌ The query is too long — 128 characters at most."
+    }
   }
 }

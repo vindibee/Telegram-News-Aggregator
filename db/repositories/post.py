@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, ClassVar, TypedDict
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
 from core.logger import get_logger
@@ -39,6 +40,44 @@ class PostData(TypedDict):
     simhash_band_3: int
     duplicate_of_id: int | None
     status: PostStatus
+
+
+#: Метки подсветки в выдаче ``ts_headline``.
+#:
+#: Это управляющие символы, а не HTML-теги, и так сделано намеренно: текст
+#: новости содержит произвольные символы, включая ``<`` и ``&``. Если
+#: попросить PostgreSQL сразу вставить ``<b>``, экранировать результат уже
+#: не получится — разметка подсветки станет неотличима от угловых скобок
+#: самого текста, и Telegram отвергнет сообщение. Поэтому подсветка
+#: помечается символами, которых в тексте быть не может, а в теги её
+#: превращает слой представления, уже после экранирования.
+HIGHLIGHT_START: Final[str] = "\x02"
+HIGHLIGHT_STOP: Final[str] = "\x03"
+
+#: Параметры фрагмента для ``ts_headline``.
+_HEADLINE_OPTIONS: Final[str] = (
+    f"StartSel={HIGHLIGHT_START}, StopSel={HIGHLIGHT_STOP}, "
+    "MaxWords=28, MinWords=12, ShortWord=3, MaxFragments=2, "
+    "FragmentDelimiter= … "
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SearchHit:
+    """Найденная запись вместе с подсвеченным фрагментом."""
+
+    post_id: int
+    channel_name: str
+    message_id: int
+    post_time: datetime
+    rank: float
+    #: Фрагмент текста с метками подсветки.
+    snippet: str
+
+    @property
+    def source_url(self) -> str:
+        """Ссылка на исходную запись канала."""
+        return f"https://t.me/{self.channel_name}/{self.message_id}"
 
 
 class PostRepository(BaseRepository[Post]):
@@ -210,6 +249,91 @@ class PostRepository(BaseRepository[Post]):
             .limit(limit)
         )
         return (await self._session.execute(stmt)).scalars().all()
+
+    @handle_db_errors
+    async def search(
+        self,
+        query_text: str,
+        *,
+        limit: int = 10,
+        offset: int = 0,
+        channel: str | None = None,
+    ) -> list[SearchHit]:
+        """Ищет записи по тексту с ранжированием и подсветкой.
+
+        Запрос разбирается через ``websearch_to_tsquery``: он принимает то,
+        что люди и так набирают в поисковой строке — кавычки для точной
+        фразы, минус для исключения, — и не падает на произвольном вводе, в
+        отличие от ``to_tsquery``, которому нужен синтаксис с операторами.
+
+        ``ts_headline`` считается только для строк, попавших в страницу:
+        это самая дорогая часть запроса, и выполнять её для всей выдачи
+        было бы расточительством.
+
+        Дубликаты исключены: они скрыты из ленты, и в поиске им делать
+        нечего — иначе одна новость занимала бы половину страницы.
+
+        :param query_text: Поисковый запрос пользователя.
+        :param limit: Сколько записей вернуть.
+        :param offset: Сколько записей пропустить.
+        :param channel: Ограничение по каналу.
+        :return: Найденные записи, сначала наиболее релевантные.
+        """
+        if not query_text.strip() or limit <= 0:
+            return []
+
+        conditions = ["p.search_vector @@ q.query", "p.status <> 'duplicate'"]
+        params: dict[str, Any] = {
+            "query": query_text,
+            "config": FTS_CONFIG,
+            "limit": limit,
+            "offset": max(0, offset),
+        }
+        if channel is not None:
+            conditions.append("p.channel_name = :channel")
+            params["channel"] = channel
+
+        # CAST вместо ``::regconfig``: двойное двоеточие сталкивается с
+        # синтаксисом именованных параметров SQLAlchemy, и подстановка
+        # молча не выполняется.
+        stmt = text(
+            f"""
+            SELECT
+                p.id,
+                p.channel_name,
+                p.message_id,
+                p.post_time,
+                ts_rank(p.search_vector, q.query) AS rank,
+                ts_headline(
+                    CAST(:config AS regconfig),
+                    p.content,
+                    q.query,
+                    :options
+                ) AS snippet
+            FROM posts AS p,
+                 websearch_to_tsquery(CAST(:config AS regconfig), :query) AS q(query)
+            WHERE {" AND ".join(conditions)}
+            ORDER BY rank DESC, p.post_time DESC
+            LIMIT :limit OFFSET :offset
+            """
+        )
+        params["options"] = _HEADLINE_OPTIONS
+
+        rows = (await self._session.execute(stmt, params)).mappings().all()
+        hits = [
+            SearchHit(
+                post_id=row["id"],
+                channel_name=row["channel_name"],
+                message_id=row["message_id"],
+                post_time=row["post_time"],
+                rank=float(row["rank"]),
+                snippet=row["snippet"] or "",
+            )
+            for row in rows
+        ]
+
+        logger.debug("Поиск %r: найдено %d записей", query_text[:64], len(hits))
+        return hits
 
     @handle_db_errors
     async def mark_duplicates(self, links: Mapping[int, int]) -> int:

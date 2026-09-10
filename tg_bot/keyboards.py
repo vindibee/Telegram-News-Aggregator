@@ -30,6 +30,7 @@ from tg_bot.callbacks import (
     ACTION_CHANNELS,
     ACTION_LANGUAGE,
     ACTION_PLANS,
+    ACTION_SEARCH,
     ACTION_SUBSCRIPTION,
     ACTION_TRIAL,
     CHANNEL_DELETE,
@@ -48,6 +49,7 @@ from tg_bot.callbacks import (
     ChannelCB,
     KeywordActionCB,
     LanguageCB,
+    SearchPageCB,
     PayMethodCB,
     MenuCB,
     PlanCB,
@@ -73,6 +75,12 @@ def kb_channels(channels: Sequence[Channel], i18n: Translator) -> InlineKeyboard
     # Кнопка языка отдельной строкой под сеткой каналов: сюда попадает
     # человек, который не понимает остального интерфейса, и она должна
     # быть заметной, а не теряться среди названий каналов.
+    builder.row(
+        InlineKeyboardButton(
+            text=i18n("buttons.search"),
+            callback_data=MenuCB(action=ACTION_SEARCH).pack(),
+        ),
+    )
     builder.row(
         InlineKeyboardButton(
             text=i18n("buttons.cabinet"),
@@ -415,4 +423,45 @@ def kb_renew(i18n: Translator) -> InlineKeyboardMarkup:
     """
     builder = InlineKeyboardBuilder()
     builder.button(text=i18n("buttons.extend"), callback_data=MenuCB(action=ACTION_PLANS))
+    return builder.as_markup()
+
+
+def kb_search_results(
+    page: int,
+    i18n: Translator,
+    *,
+    has_prev: bool,
+    has_next: bool,
+) -> InlineKeyboardMarkup:
+    """Клавиатура постраничной выдачи поиска.
+
+    Кнопка показывается только когда есть куда идти: неактивная стрелка,
+    которая ничего не делает, раздражает сильнее, чем её отсутствие.
+    """
+    builder = InlineKeyboardBuilder()
+    row: list[InlineKeyboardButton] = []
+
+    if has_prev:
+        row.append(
+            InlineKeyboardButton(
+                text=i18n("buttons.prev_page"),
+                callback_data=SearchPageCB(page=page - 1).pack(),
+            )
+        )
+    if has_next:
+        row.append(
+            InlineKeyboardButton(
+                text=i18n("buttons.next_page"),
+                callback_data=SearchPageCB(page=page + 1).pack(),
+            )
+        )
+    if row:
+        builder.row(*row)
+
+    builder.row(
+        InlineKeyboardButton(
+            text=i18n("buttons.channels"),
+            callback_data=MenuCB(action=ACTION_CHANNELS).pack(),
+        )
+    )
     return builder.as_markup()
