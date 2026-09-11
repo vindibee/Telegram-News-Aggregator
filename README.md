@@ -1,804 +1,897 @@
-# Telegram News Aggregator
+<h1 align="center">Telegram News Aggregator</h1>
 
-Telegram-бот, который собирает записи публичных каналов через веб-превью
-`t.me/s/<channel>`, сохраняет их в PostgreSQL и показывает пользователю
-с текстом и медиа.
+<p align="center">
+  A production-grade Telegram bot that collects posts from public channels,
+  deduplicates them, stores them in PostgreSQL and republishes them to your own
+  channels — with subscriptions, trials, payments and an admin panel.
+</p>
 
-## Архитектура
+<p align="center">
+  <a href="https://t.me/dekelia_bot"><b>▶ Try the live bot — @dekelia_bot</b></a>
+</p>
 
-Слои разделены по ответственности, зависимости направлены строго вниз:
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white" alt="Python 3.11">
+  <img src="https://img.shields.io/badge/aiogram-3.31-2CA5E0?logo=telegram&logoColor=white" alt="aiogram 3.31">
+  <img src="https://img.shields.io/badge/SQLAlchemy-2.0-D71F00" alt="SQLAlchemy 2.0">
+  <img src="https://img.shields.io/badge/PostgreSQL-15-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL 15">
+  <img src="https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white" alt="Redis 7">
+  <img src="https://img.shields.io/badge/Docker-compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
+  <img src="https://img.shields.io/badge/tests-pytest-0A9EDC?logo=pytest&logoColor=white" alt="pytest">
+</p>
+
+<p align="center">
+  <b>English</b> · <a href="README.ru.md">Русский</a>
+</p>
+
+---
+
+## What it does
+
+The bot reads public Telegram channels through their web preview
+(`t.me/s/<channel>`), stores every post in PostgreSQL and shows it to the user
+with text and media attached. On top of that sits a full product: paid plans,
+a trial period, referrals, link tracking and scheduled republishing.
+
+| Feature | Description |
+|---|---|
+| **News feed** | Reads any public channel through its web preview — no userbot, no MTProto, no phone number |
+| **Deduplication** | The same story from five channels collapses into one entry: SHA-256 → simhash bands → Jaccard/Levenshtein |
+| **Full-text search** | `/search` over the archive with PostgreSQL `tsvector`, stemming, ranking and highlighting |
+| **Auto-posting** | Republishes selected news to your own channels through a queue with retries |
+| **Word filter** | Per-user trigger words and stop words |
+| **Subscriptions** | Paid plans with a trial period and multi-account protection |
+| **Payments** | Telegram Stars and crypto (CryptoBot), both idempotent end to end |
+| **Link tracking** | Rewrites outbound links, counts clicks and unique visitors, reports through `/stats` |
+| **Growth** | Referral programme and promo codes |
+| **Admin panel** | Business metrics and a rate-limited broadcast engine |
+| **Localisation** | Russian, English and Ukrainian, plural forms included |
+| **Anti-flood** | Token bucket in Redis, sliding window, single-flight and locks on critical actions |
+
+## Tech stack
+
+| Layer | Choice | Why |
+|---|---|---|
+| Language | **Python 3.11** | `asyncio` throughout: the bot, the worker and the webhook server are all I/O-bound |
+| Bot framework | **aiogram 3** | Native async Bot API client with routers, FSM, middlewares and typed `callback_data` |
+| Database | **PostgreSQL 15** | The correctness of this product lives in the schema: unique and partial indexes, CHECKs, `FOR UPDATE SKIP LOCKED`, advisory locks, generated `tsvector` columns |
+| ORM | **SQLAlchemy 2.0** (async) | Typed declarative models over `asyncpg`, with a repository layer as the only place that speaks SQL |
+| Migrations | **Alembic** | The application never mutates the schema — only migrations do |
+| Cache / locks | **Redis 7** | FSM storage, rate-limit buckets, the dedup window, the click buffer and distributed locks |
+| Scheduler | **APScheduler** | Periodic jobs in a separate worker process |
+| HTTP | **aiohttp** | Channel fetching, media downloads, the CryptoBot API and the webhook/redirect server |
+| Parsing | **BeautifulSoup 4** | HTML of the channel web preview |
+| Tests | **pytest** + **pytest-asyncio** | Real PostgreSQL and `fakeredis[lua]`, time frozen with `freezegun` |
+| Packaging | **Docker Compose** | Bot, worker, PostgreSQL and Redis as four services |
+
+### Key libraries
+
+```text
+aiogram==3.31.0          Telegram Bot API framework (routers, FSM, middlewares)
+SQLAlchemy==2.0.29       async ORM, typed declarative models
+asyncpg==0.29.0          PostgreSQL driver
+alembic==1.13.1          schema migrations
+redis==5.0.3             async Redis client (rate limits, FSM, locks, buffers)
+APScheduler==3.10.4      background job scheduling
+aiohttp==3.9.3           async HTTP client and webhook server
+beautifulsoup4==4.12.3   HTML parsing of channel previews
+python-dotenv==1.0.1     configuration from .env
+
+pytest==9.1.1            test runner
+pytest-asyncio==1.4.0    async tests
+pytest-cov==7.0.0        coverage
+freezegun==1.5.1         frozen time (with real_asyncio=True)
+fakeredis[lua]==2.26.2   Redis backend under test, Lua scripts included
+```
+
+## Quick start
+
+```bash
+git clone https://github.com/vindibee/Telegram-News-Aggregator.git
+cd Telegram-News-Aggregator
+cp .env.example .env          # set BOT_TOKEN and the database password
+docker compose -f Docker/docker-compose.yml up -d --build
+```
+
+Everything else — local setup without Docker, the full environment reference
+and the design notes behind every subsystem — is documented below.
+
+## Architecture
+
+The layers are split by responsibility and dependencies point strictly
+downwards:
 
 ```
-main.py                 композиционный корень: создаёт бота, БД, HTTP-сессию
-└── tg_bot/             слой Telegram
-    ├── handlers/       разбор ввода и вызов сервисов (без SQL и HTTP)
-    │   └── cabinet.py  личный кабинет: источники, цели, фильтр слов
-    ├── views.py        отрисовка карточки поста
-    ├── keyboards.py    инлайн-клавиатуры
-    ├── callbacks.py    типизированные callback_data
-    ├── middlewares/    зависимости, троттлинг, защита от двойных нажатий
-    ├── flags.py        флаги хендлеров (индивидуальные лимиты)
-    ├── states.py       состояния FSM
-    ├── errors.py       глобальная обработка исключений
-    └── utils.py        безопасное редактирование, нарезка текста, ретраи
-└── services/           прикладной слой
-    ├── parser.py       парсинг HTML канала
-    ├── media.py        загрузка вложений с лимитом размера
-    ├── news_service.py сценарии «показать» и «обновить»
-    ├── billing/        оплата подписки звёздами и криптовалютой
-    ├── trial/          пробный период и защита от мультиаккаунтов
-    ├── notifier.py     рассылка с учётом лимитов Bot API
-    ├── search.py       полнотекстовый поиск по архиву
-    ├── tracker.py      подмена ссылок, учёт переходов, отчёты
-    ├── dedup.py        склейка повторов новостей
-    ├── dedup_index.py  окно свежих новостей в Redis
-    ├── fingerprint.py  отпечатки текста и меры сходства
-    └── ratelimit/      ограничение частоты и анти-флуд
-└── db/                 доступ к данным
-    ├── models/         ORM-модели (SQLAlchemy 2.0)
-    │   ├── user.py     пользователи, язык, отпечатки триала
-    │   ├── channel.py  источники и цели публикации
-    │   ├── referral.py реферальные начисления
-    │   ├── keyword.py  триггеры и стоп-слова фильтра
-    │   ├── schedule.py очередь отложенных публикаций
-    │   ├── promo.py    промокоды и их активации
-    │   └── tracking.py короткие ссылки и журнал кликов
-    ├── enums.py        перечисления домена и нативные ENUM PostgreSQL
-    ├── mixins.py       общие фрагменты моделей (PK, отметки времени)
-    ├── exceptions.py   доменные исключения
-    ├── repositories/   репозитории: единственное место с SQL
-    ├── uow.py          Unit of Work — граница транзакции
-    ├── locks.py        advisory-блокировки PostgreSQL
-    └── database.py     движок и фабрика сессий
-└── migrations/         миграции Alembic
-└── worker/             фоновый воркер (отдельный процесс)
-    ├── __main__.py     точка входа: python -m worker
-    ├── runner.py       планировщик задач поверх APScheduler
-    └── tasks/          периодические задачи (подписки, счета, публикации)
-└── locales/            каталоги переводов (ru, en, uk)
-└── web/                вебхуки платежей и редирект коротких ссылок
-└── core/               конфигурация и логирование
+main.py                 composition root: builds the bot, the DB and the HTTP session
+└── tg_bot/             Telegram layer
+    ├── handlers/       input parsing and service calls (no SQL, no HTTP)
+    │   └── cabinet.py  personal cabinet: sources, targets, word filter
+    ├── views.py        post card rendering
+    ├── keyboards.py    inline keyboards
+    ├── callbacks.py    typed callback_data
+    ├── middlewares/    dependencies, throttling, double-tap protection
+    ├── flags.py        handler flags (per-handler limits)
+    ├── states.py       FSM states
+    ├── errors.py       global exception handling
+    └── utils.py        safe editing, text chunking, retries
+└── services/           application layer
+    ├── parser.py       channel HTML parsing
+    ├── media.py        attachment download with a size limit
+    ├── news_service.py the "show" and "refresh" scenarios
+    ├── billing/        subscription payment by Stars and crypto
+    ├── trial/          trial period and multi-account protection
+    ├── notifier.py     delivery that respects Bot API limits
+    ├── search.py       full-text search over the archive
+    ├── tracker.py      link rewriting, click accounting, reports
+    ├── dedup.py        collapsing repeated news
+    ├── dedup_index.py  recent-news window in Redis
+    ├── fingerprint.py  text fingerprints and similarity measures
+    └── ratelimit/      rate limiting and anti-flood
+└── db/                 data access
+    ├── models/         ORM models (SQLAlchemy 2.0)
+    │   ├── user.py     users, language, trial fingerprints
+    │   ├── channel.py  sources and publication targets
+    │   ├── referral.py referral rewards
+    │   ├── keyword.py  filter triggers and stop words
+    │   ├── schedule.py queue of scheduled publications
+    │   ├── promo.py    promo codes and their redemptions
+    │   └── tracking.py short links and the click log
+    ├── enums.py        domain enums and native PostgreSQL ENUMs
+    ├── mixins.py       shared model fragments (PK, timestamps)
+    ├── exceptions.py   domain exceptions
+    ├── repositories/   repositories: the only place with SQL
+    ├── uow.py          Unit of Work — the transaction boundary
+    ├── locks.py        PostgreSQL advisory locks
+    └── database.py     engine and session factory
+└── migrations/         Alembic migrations
+└── worker/             background worker (separate process)
+    ├── __main__.py     entry point: python -m worker
+    ├── runner.py       job scheduler on top of APScheduler
+    └── tasks/          periodic jobs (subscriptions, invoices, publications)
+└── locales/            translation catalogues (ru, en, uk)
+└── web/                payment webhooks and short-link redirects
+└── core/               configuration and logging
 ```
 
-## Модель данных
+## Data model
 
-| Таблица | Назначение | Ключевые гарантии на уровне БД |
+| Table | Purpose | Key guarantees at the database level |
 |---|---|---|
-| `users` | Пользователи, язык интерфейса, рефералы, факт триала | `UNIQUE(telegram_id)`, `UNIQUE(referral_code)`, запрет самореферала |
-| `trial_claims` | Отпечатки для защиты триала | `UNIQUE(kind, fingerprint)` — второй триал с того же телефона/IP невозможен |
-| `subscriptions` | Подписки и сроки | Частичный `UNIQUE(user_id) WHERE status IN ('trialing','active')` — одна действующая подписка |
-| `subscription_events` | Журнал операций | `UNIQUE(payment_id)` — один платёж не может начислить дни дважды |
-| `payments` | Платежи | `UNIQUE(provider, invoice_id)`, `UNIQUE(provider, external_id)`, `UNIQUE(idempotency_key)`, `amount > 0` |
-| `posts` | Новости | `UNIQUE(channel_name, message_id)`, генерируемый `tsvector` + GIN, `content_hash` и simhash-band для дедупликации |
-| `user_channels` | Источники и цели публикации | `UNIQUE(user_id, kind, username)` и `UNIQUE(user_id, kind, chat_id)`, цель обязана иметь `chat_id` |
-| `user_keywords` | Триггеры и стоп-слова фильтра | `UNIQUE(user_id, kind, word)`, CHECK `word = lower(word)` |
-| `scheduled_posts` | Очередь отложенных публикаций | `UNIQUE(target_channel_id, post_id)`, опубликованная запись обязана иметь `message_id` |
-| `referrals` | Реферальные начисления | `UNIQUE(referred_id)` — приглашённый учитывается один раз; запрет самореферала |
-| `promocodes` | Промокоды | `UNIQUE(code)`, `activations <= max_activations`, скидка не выше 100 % |
-| `promocode_redemptions` | Активации промокодов | `UNIQUE(promocode_id, user_id)` — один код на пользователя |
-| `tracked_links` | Короткие ссылки | `UNIQUE(token)`, `unique_clicks <= clicks` |
-| `click_logs` | Журнал переходов | `UNIQUE(link_id, visitor_hash)` — уникальный переход считается один раз |
+| `users` | Users, interface language, referrals, trial usage | `UNIQUE(telegram_id)`, `UNIQUE(referral_code)`, self-referral forbidden |
+| `trial_claims` | Fingerprints protecting the trial | `UNIQUE(kind, fingerprint)` — a second trial from the same phone/IP is impossible |
+| `subscriptions` | Subscriptions and their periods | Partial `UNIQUE(user_id) WHERE status IN ('trialing','active')` — one live subscription |
+| `subscription_events` | Operation log | `UNIQUE(payment_id)` — one payment cannot grant days twice |
+| `payments` | Payments | `UNIQUE(provider, invoice_id)`, `UNIQUE(provider, external_id)`, `UNIQUE(idempotency_key)`, `amount > 0` |
+| `posts` | News | `UNIQUE(channel_name, message_id)`, generated `tsvector` + GIN, `content_hash` and simhash bands for deduplication |
+| `user_channels` | Sources and publication targets | `UNIQUE(user_id, kind, username)` and `UNIQUE(user_id, kind, chat_id)`; a target must have a `chat_id` |
+| `user_keywords` | Filter triggers and stop words | `UNIQUE(user_id, kind, word)`, CHECK `word = lower(word)` |
+| `scheduled_posts` | Queue of scheduled publications | `UNIQUE(target_channel_id, post_id)`; a published row must carry a `message_id` |
+| `referrals` | Referral rewards | `UNIQUE(referred_id)` — an invitee counts once; self-referral forbidden |
+| `promocodes` | Promo codes | `UNIQUE(code)`, `activations <= max_activations`, discount capped at 100% |
+| `promocode_redemptions` | Promo code redemptions | `UNIQUE(promocode_id, user_id)` — one code per user |
+| `tracked_links` | Short links | `UNIQUE(token)`, `unique_clicks <= clicks` |
+| `click_logs` | Click log | `UNIQUE(link_id, visitor_hash)` — a unique visit is counted once |
 
-Персональные данные не хранятся нигде: телефон в `trial_claims` и связка
-«IP + User-Agent» в `click_logs` превращаются в HMAC-SHA256 с серверным
-секретом. Обычного хэша недостаточно — и множество телефонных номеров, и
-всё пространство IPv4 перебираются за минуты.
+No personal data is stored anywhere: the phone number in `trial_claims` and the
+"IP + User-Agent" pair in `click_logs` become HMAC-SHA256 with a server-side
+secret. A plain hash would not be enough — both the space of phone numbers and
+the whole IPv4 space can be brute-forced in minutes.
 
-**Почему источники и цели публикации в одной таблице.** Набор полей у них
-совпадает полностью, различие — одно значение `kind`. Две почти одинаковые
-таблицы означали бы дублирование индексов, ограничений и репозиторного
-кода. Роль входит в ключ уникальности: один канал можно одновременно
-читать и публиковать в него.
+**Why sources and publication targets share one table.** Their field sets are
+identical; the only difference is a single `kind` value. Two nearly identical
+tables would mean duplicated indexes, constraints and repository code. The role
+is part of the uniqueness key, so the same channel can be read from and
+published to at once.
 
-**Почему рефералы отдельной таблицей, если есть `users.referred_by_id`.**
-Поле в `users` фиксирует факт связи, а `referrals` — жизненный цикл
-начисления: когда приглашение стало зачётным, по какому платежу и сколько
-дней уже выдано. Без этой записи повторная доставка вебхука оплаты
-начислила бы бонус второй раз. Вознаграждение привязано к первой оплате
-приглашённого, а не к регистрации: иначе программу выгодно фармить
-пустыми аккаунтами.
+**Why referrals live in their own table when `users.referred_by_id` exists.**
+The column in `users` records the fact of the relation; `referrals` records the
+lifecycle of the reward: when the invitation qualified, against which payment,
+and how many days have already been granted. Without that row, a redelivered
+payment webhook would grant the bonus a second time. The reward is tied to the
+invitee's first payment rather than to registration — otherwise the programme
+would be profitable to farm with empty accounts.
 
-**Почему очередь публикаций хранит `message_id`.** Без него нельзя ни
-отредактировать публикацию, ни удалить её, ни отличить «отправлено» от
-«кажется, отправлено». CHECK не даёт перевести запись в `published`, не
-записав идентификатор сообщения.
+**Why the publication queue stores `message_id`.** Without it you can neither
+edit a publication, nor delete it, nor tell "sent" from "seems sent". A CHECK
+prevents moving a row into `published` without recording the message id.
 
-**Почему одна неудача не выбрасывает пост из очереди.** Счётчик попыток
-растёт при каждом сбое, а статус меняется только когда попытки
-исчерпаны: сбой публикации почти всегда временный — flood control или
-минутная недоступность канала.
+**Why one failure does not drop a post from the queue.** The attempt counter
+grows on every failure, but the status only changes once attempts run out:
+a publication failure is almost always temporary — flood control or a channel
+being briefly unreachable.
 
-**Почему счётчики денормализованы.** `promocodes.activations`,
-`tracked_links.clicks` и `unique_clicks` хранятся в строке, а не
-считаются `COUNT(*)`. Лимит промокода проверяется на каждое применение, а
-журнал кликов — самая быстрорастущая таблица продукта. Расхождение
-исключено тем, что счётчик меняется в одной транзакции с записью факта, а
-CHECK-ограничения не дают ему выйти за пределы.
+**Why counters are denormalised.** `promocodes.activations`,
+`tracked_links.clicks` and `unique_clicks` are stored in the row instead of
+being derived with `COUNT(*)`. A promo code's limit is checked on every
+redemption, and the click log is the fastest-growing table in the product.
+Divergence is ruled out because the counter changes in the same transaction as
+the fact it counts, and CHECK constraints keep it inside its bounds.
 
-**Язык интерфейса.** `users.language` — осознанный выбор пользователя, а
-`users.language_code` — подсказка от клиента Telegram. Их нельзя
-смешивать: человек с английской системой вполне может хотеть русский
-интерфейс, и настройка устройства не должна молча перекрывать его
-решение.
+**Interface language.** `users.language` is the user's deliberate choice, while
+`users.language_code` is a hint from the Telegram client. They must not be
+mixed: someone with an English system may well want a Russian interface, and a
+device setting must not silently override that decision.
 
-Полнотекстовый поиск использует конфигурацию `russian` со стеммингом, а
-`search_vector` объявлен генерируемой колонкой — рассинхронизация индекса
-с текстом невозможна по построению.
+Full-text search uses the `russian` configuration with stemming, and
+`search_vector` is declared as a generated column — index and text cannot drift
+apart by construction.
 
-## Знакомство с ботом
+## Onboarding
 
-Первым экраном раньше был список каналов — он понятен только тому, кто уже
-знает, зачем сюда пришёл. Теперь вход разбит на три коротких шага.
+The first screen used to be the channel list — which only makes sense to
+someone who already knows why they came. The entry point is now three short
+steps.
 
-1. **`/start`** — двуязычное приветствие и одна кнопка «Начать». Одна
-   намеренно: человек, впервые открывший бота, ещё ничего о нём не знает, и
-   выбор из десяти разделов на этом шаге не помогает, а мешает.
-2. **Выбор языка** — до любого содержательного текста. Обратный порядок
-   означал бы, что первый и самый важный экран читается на языке, который
-   подставил Telegram, а не который выбрал человек.
-3. **Рассказ о боте** — уже на выбранном языке: что он делает, зачем нужен и
-   перечень возможностей.
+1. **`/start`** — a bilingual greeting and a single "Start" button. Single on
+   purpose: someone opening the bot for the first time knows nothing about it
+   yet, and a choice of ten sections at that moment gets in the way rather than
+   helping.
+2. **Language choice** — before any meaningful text. The reverse order would
+   mean the first and most important screen is read in whatever language
+   Telegram supplied, not the one the person picked.
+3. **What the bot does** — already in the chosen language: what it is for and
+   what it can do.
 
-Дальше — главное меню из **функций**, а не из каналов: канал это одна из
-возможностей, а не сам продукт. Список каналов никуда не делся и открывается
-из меню как «Лента новостей».
+Next comes a main menu of **features**, not of channels: a channel is one of
+the capabilities, not the product itself. The channel list did not go anywhere
+and opens from the menu as "News feed".
 
-Справка устроена каталогом: раздел «Как пользоваться» перечисляет девять
-функций, и по каждой отдельный экран из трёх частей — *что это*, *как
-пользоваться*, *зачем нужно*. Плоский список команд остался, но ушёл на
-отдельный экран: команды полезны тому, кто уже освоился, а новичку не
-говорят ничего.
+Help is organised as a catalogue: the "How to use" section lists nine features,
+each with its own screen in three parts — *what it is*, *how to use it*, *why
+it matters*. The flat list of commands is still there but moved to a separate
+screen: commands help those who already found their footing and tell a newcomer
+nothing.
 
-Всё это локализовано целиком — и кнопки, и объяснения. Смена языка в любой
-момент перерисовывает оба.
+All of it is fully localised — buttons and explanations alike. Switching the
+language at any moment redraws both.
 
-## Поиск по архиву
+## Archive search
 
-`/search` — полнотекстовый поиск с ранжированием и подсветкой. Возможность
-платного тарифа, поэтому доступ проверяется и при вводе запроса, и при
-перелистывании: подписка успевает закончиться между страницами.
+`/search` is full-text search with ranking and highlighting. It is a paid-plan
+feature, so access is checked both when the query is entered and when pages are
+turned: a subscription can expire between two pages.
 
-**Одна конфигурация на два языка.** `to_tsvector('russian', …)` стеммит и
-кириллицу, и латиницу: `releases`, `released`, `releasing` дают одну лемму
-`releas`. Отдельная колонка под английский не нужна.
+**One configuration for two languages.** `to_tsvector('russian', …)` stems both
+Cyrillic and Latin: `releases`, `released` and `releasing` all yield the lemma
+`releas`. A separate column for English is unnecessary.
 
-**`websearch_to_tsquery`, а не `to_tsquery`.** Первый принимает то, что
-люди и так набирают: кавычки для точной фразы, минус для исключения — и не
-падает на произвольном вводе, тогда как второму нужен синтаксис с
-операторами, и любая опечатка стала бы ошибкой.
+**`websearch_to_tsquery`, not `to_tsquery`.** The former accepts what people
+type anyway — quotes for an exact phrase, a minus for exclusion — and does not
+fail on arbitrary input, whereas the latter needs operator syntax where any
+typo becomes an error.
 
-**Подсветка размечается управляющими символами, а не тегами.** Текст
-новости содержит произвольные символы, включая `<` и `&`. Если попросить
-PostgreSQL сразу вставить `<b>`, экранировать результат уже не выйдет —
-разметка станет неотличима от угловых скобок самого текста, и Telegram
-отвергнет сообщение. Поэтому `ts_headline` помечает совпадения символами,
-которых в тексте быть не может, а в теги их превращает слой представления,
-уже после экранирования.
+**Highlighting is marked with control characters, not tags.** News text
+contains arbitrary characters, `<` and `&` included. If PostgreSQL inserted
+`<b>` directly, escaping the result afterwards would be impossible — the markup
+would be indistinguishable from the text's own angle brackets, and Telegram
+would reject the message. So `ts_headline` marks matches with characters that
+cannot occur in the text, and the presentation layer turns them into tags after
+escaping.
 
-**Общего числа найденного нет намеренно.** `COUNT(*)` по полнотекстовому
-запросу стоит примерно столько же, сколько сама выдача. Вместо этого
-запрашивается на одну запись больше страницы: пришла — есть следующая.
+**The total number of results is deliberately absent.** `COUNT(*)` over a
+full-text query costs roughly as much as the query itself. Instead, one row
+more than the page is requested: if it arrives, there is a next page.
 
-**Запрос живёт в состоянии FSM, а не в `callback_data`.** Там 64 байта, и
-дело не только в размере: эти данные приходят от клиента, и подменённая
-строка вела бы к чужой выдаче под видом перелистывания.
+**The query lives in FSM state, not in `callback_data`.** That field holds 64
+bytes, and size is not the only issue: the data comes from the client, and a
+tampered string would surface someone else's results under the guise of paging.
 
-Дубликаты из выдачи исключены — иначе одна новость занимала бы половину
-страницы.
+Duplicates are excluded from results — otherwise one story would fill half a
+page.
 
-## Дедупликация новостей
+## News deduplication
 
-Одна и та же новость приходит из нескольких каналов: где-то дословно,
-где-то с дописанным призывом подписаться. Решение принимается в три
-ступени, от дешёвой к дорогой.
+The same story arrives from several channels: somewhere verbatim, somewhere
+with a "subscribe" call-to-action appended. The decision is made in three
+stages, from cheap to expensive.
 
-| Ступень | Механизм | Что ловит |
+| Stage | Mechanism | What it catches |
 |---|---|---|
-| Точное совпадение | SHA-256 нормализованного текста, поиск по индексу | Дословные перепечатки — их большинство |
-| Отбор кандидатов | Совпадение среза simhash **или** полнотекстовый поиск по общей лексике | Десятки записей вместо всей таблицы |
-| Подтверждение | Расстояние Хэмминга, затем Jaccard по шинглам или Левенштейн | Отсев ложных пар |
+| Exact match | SHA-256 of the normalised text, looked up by index | Verbatim reprints — the majority |
+| Candidate selection | A matching simhash band **or** full-text search over shared vocabulary | Dozens of rows instead of the whole table |
+| Confirmation | Hamming distance, then Jaccard over shingles or Levenshtein | Filters out false pairs |
 
-**Почему два канала отбора.** Срезы simhash (LSH by banding) находят только
-почти идентичные тексты: при четырёх срезах по 16 бит различающиеся биты
-перепечатки с дописанным абзацем попадают во все срезы сразу, и кандидат не
-находится вовсе. Полнотекстовый индекс, построенный ещё для поиска, ищет по
-общей лексике и такие пары находит.
+**Why two selection channels.** Simhash bands (LSH by banding) only find nearly
+identical texts: with four 16-bit bands, the differing bits of a reprint with an
+extra paragraph land in every band at once, and the candidate is not found at
+all. The full-text index, built for search anyway, matches on shared vocabulary
+and does find such pairs.
 
-**Почему пороги именно такие.** Замеры на новостных парах: настоящие
-перепечатки дают расстояние Хэмминга 0–8 и Jaccard 0.85–1.00, разные
-новости — расстояние 23–31 и Jaccard 0.00–0.08. Порог Хэмминга стоит в
-середине разрыва (16) и работает как фильтр с высокой полнотой, а решение
-принимает Jaccard с порогом 0.75. Обратное распределение ролей — строгий
-Хэмминг и мягкий Jaccard — теряло бы настоящие дубликаты.
+**Why these thresholds.** Measured on news pairs: genuine reprints give a
+Hamming distance of 0–8 and Jaccard of 0.85–1.00, while unrelated news gives
+23–31 and 0.00–0.08. The Hamming threshold sits in the middle of that gap (16)
+and acts as a high-recall filter, while the decision is made by Jaccard at 0.75.
+Swapping the roles — strict Hamming, lenient Jaccard — would lose genuine
+duplicates.
 
-**Короткие сообщения** сравниваются по Левенштейну: у текста из пяти слов
-трёхсловных сочетаний всего три, и одно изменённое слово роняет Jaccard
-почти до нуля.
+**Short messages** are compared with Levenshtein: a five-word text has only
+three three-word shingles, and a single changed word drops Jaccard to almost
+zero.
 
-**Чего алгоритм не ловит:** рерайт, пересказанный своими словами, и
-транслитерацию («Twitter» против «Твиттер»). Лексические меры видят там
-разные тексты — для таких случаев нужны векторные представления.
+**What the algorithm does not catch:** a rewrite retold in someone's own words,
+and transliteration ("Twitter" vs "Твиттер"). Lexical measures see different
+texts there — such cases need vector representations.
 
-**Окно последних 48 часов дублируется в Redis.** Кандидаты можно искать и
-в PostgreSQL, но это два запроса на каждую входящую запись, и второй из
-них тяжёлый. Окно при этом узкое, а объём — тысячи записей, которые
-помещаются в память.
+**The last 48 hours are mirrored in Redis.** Candidates could be looked up in
+PostgreSQL alone, but that means two queries per incoming row, the second of
+them heavy. The window is narrow and holds thousands of rows, which fit in
+memory comfortably.
 
-Redis здесь ускоряет, а PostgreSQL гарантирует. Индекс — кэш, а не
-источник правды: он бывает пустым после перезапуска и недоступным вовсе,
-поэтому промах никогда не означает «дубликатов нет». Точное совпадение
-при промахе проверяется в базе, отбор по срезам всегда дополняется базой,
-а экономится самый дорогой шаг — полнотекстовый поиск, и только когда
-кандидатов уже достаточно.
+Redis accelerates here; PostgreSQL guarantees. The index is a cache, not a
+source of truth: it can be empty after a restart or unavailable entirely, so a
+miss never means "no duplicates". On a miss the exact match is verified in the
+database, band selection is always complemented by the database, and what is
+saved is the most expensive step — full-text search — and only when there are
+already enough candidates.
 
-Для разовой проверки есть `is_duplicate(text, threshold)` и
-`find_duplicate(text)`, возвращающий идентификатор оригинала и степень
-сходства в процентах. Для пачки записей парсера по-прежнему используется
-`classify`: он дополнительно сравнивает записи между собой.
+For one-off checks there are `is_duplicate(text, threshold)` and
+`find_duplicate(text)`, which returns the original's id and the similarity as a
+percentage. For a batch from the parser, `classify` is still used: it also
+compares the incoming rows against each other.
 
-Дубликаты не удаляются: они сохраняются со статусом `duplicate` и ссылкой
-`duplicate_of_id` на оригинал, но скрыты из выдачи. Так остаётся возможность
-пересобрать кластеры при смене порогов и посчитать, сколько повторов
-отсеивается.
+Duplicates are not deleted: they are stored with status `duplicate` and a
+`duplicate_of_id` reference to the original, but hidden from results. That
+keeps the option of rebuilding clusters when thresholds change, and of counting
+how many repeats are being filtered out.
 
-## Фоновый воркер
+## Background worker
 
-Отдельный процесс и отдельный контейнер: у воркера свой профиль нагрузки,
-его можно масштабировать независимо, а падение фоновой задачи не должно
-ронять обработку сообщений. Схему БД воркер не мигрирует — это делает бот.
+A separate process and a separate container: the worker has its own load
+profile, can be scaled independently, and a failing background job must not
+take message handling down with it. The worker does not migrate the schema —
+the bot does.
 
 ```bash
 python -m worker
 ```
 
-| Задача | Интервал | Что делает |
+| Job | Interval | What it does |
 |---|---|---|
-| `subscription_expiry_notice` | 15 мин | Предупреждает за сутки до окончания подписки |
-| `subscription_expiration` | 5 мин | Отзывает доступ у истёкших подписок |
-| `stale_invoice_cleanup` | 10 мин | Просрочивает неоплаченные счета |
-| `scheduled_post_publisher` | 30 с | Публикует отложенные новости в целевые каналы |
-| `click_flush` | 60 с | Переносит переходы по ссылкам из Redis в базу |
+| `subscription_expiry_notice` | 15 min | Warns a day before the subscription ends |
+| `subscription_expiration` | 5 min | Revokes access for expired subscriptions |
+| `stale_invoice_cleanup` | 10 min | Expires unpaid invoices |
+| `scheduled_post_publisher` | 30 s | Publishes scheduled news into target channels |
+| `click_flush` | 60 s | Moves link clicks from Redis into the database |
 
-Все задачи разбирают очередь через `FOR UPDATE SKIP LOCKED`, поэтому
-несколько реплик воркера не обработают одну подписку дважды.
+All jobs consume their queue with `FOR UPDATE SKIP LOCKED`, so several worker
+replicas never process one subscription twice.
 
-**Компенсация при сбое доставки.** Отметка об уведомлении ставится вместе с
-захватом, одним запросом — иначе два воркера уведомили бы пользователя
-дважды. Но раз отметка ставится *до* отправки, при сбое доставки её нужно
-снять: следующий прогон такую подписку уже не увидел бы, и уведомление
-пропало бы навсегда. Исключение — заблокировавшие бота: им повторять
-бессмысленно, они помечаются в `users.is_bot_blocked` и исключаются из
-будущих рассылок.
+**Compensation on delivery failure.** The notification mark is set together
+with the claim, in a single query — otherwise two workers would notify the user
+twice. But since the mark is set *before* sending, it has to be cleared when
+delivery fails: the next run would not see that subscription again and the
+notice would be lost forever. The exception is users who blocked the bot:
+retrying is pointless, they are flagged in `users.is_bot_blocked` and excluded
+from future mailings.
 
-Отзыв доступа компенсации не имеет намеренно: если сообщение не дошло,
-подписка всё равно должна закончиться.
+Access revocation deliberately has no compensation: if the message did not
+arrive, the subscription must still end.
 
-**Публикация идёт вне транзакции захвата.** Держать транзакцию открытой,
-пока бот ходит в Telegram, значит удерживать блокировки строк на время
-сетевого обмена: при flood control это секунды, при недоступности —
-минуты. Очередь захватывается, транзакция закрывается, отправки
-выполняются, результат пишется отдельной транзакцией.
+**Publishing happens outside the claiming transaction.** Holding a transaction
+open while the bot talks to Telegram means holding row locks for the duration
+of a network exchange: seconds under flood control, minutes when a channel is
+unavailable. The queue is claimed, the transaction closes, the sends happen,
+and the result is written in a separate transaction.
 
-**Статус меняется после факта, а не до него.** Пометить «опубликовано»
-заранее было бы удобнее для идемпотентности, но упавший между пометкой и
-отправкой воркер потерял бы публикацию навсегда. Повторная отправка в
-худшем случае даёт дубль в канале, потеря — молчание там, где
-пользователь ждал публикацию.
+**The status changes after the fact, not before it.** Marking "published" up
+front would be more convenient for idempotency, but a worker that dies between
+the mark and the send would lose the publication forever. A repeated send at
+worst produces a duplicate in the channel; a loss produces silence where the
+user expected a post.
 
-**Подписка проверяется на момент публикации.** Между постановкой в
-очередь и отправкой проходят часы, и подписка успевает закончиться:
-публиковать по ней — раздавать платную функцию бесплатно.
+**The subscription is checked at publication time.** Hours pass between
+queueing and sending, and a subscription can expire in between: publishing
+anyway means giving away a paid feature for free.
 
-**`copy_message` с откатом на текст.** Копирование переносит исходное
-оформление и медиа как есть, но возможно лишь пока бот видит исходное
-сообщение — канал могли закрыть, запись удалить. Тогда используется
-сохранённый текст: опубликовать новость без оформления лучше, чем не
-опубликовать.
+**`copy_message` with a text fallback.** Copying carries the original
+formatting and media across as they are, but only works while the bot can still
+see the source message — the channel may have been closed, the post deleted.
+Then the stored text is used: publishing the news without formatting beats not
+publishing it.
 
-**Потеря прав необратима сама по себе**, поэтому вместо трёх попыток
-канал помечается без прав, а вся очередь в него отменяется одним
-запросом. Остальные публикации в тот же канал в этом же проходе
-пропускаются, не тратя запросы на заведомый отказ.
+**Losing rights is irreversible by itself**, so instead of three attempts the
+channel is flagged as lacking rights and its entire queue is cancelled in a
+single query. Remaining publications to the same channel in the same pass are
+skipped without spending requests on a certain rejection.
 
-**Окончание подписки отключает автопостинг** в той же транзакции, что и
-смену статуса: отдельным шагом после рассылки он продолжал бы работать
-всё время, пока она идёт. Источники при этом остаются — чтение доступно
-и без подписки, а вернувшийся через месяц пользователь не должен
-собирать список каналов заново.
+**A subscription ending disables auto-posting** in the same transaction as the
+status change: as a separate step after the mailing it would keep working for
+as long as the mailing runs. Sources are kept — reading works without a
+subscription, and someone returning a month later should not have to rebuild
+their channel list.
 
-**Остановка.** По SIGTERM планировщик сначала ставится на паузу, и только
-потом дожидаются текущие прогоны. Обратный порядок недопустим: исполнитель
-APScheduler отменяет выполняющиеся корутины независимо от флага `wait`, и
-задача оборвалась бы посреди транзакции.
+**Shutdown.** On SIGTERM the scheduler is paused first, and only then are
+running jobs awaited. The reverse order is unacceptable: the APScheduler
+executor cancels running coroutines regardless of the `wait` flag, and a job
+would be cut off mid-transaction.
 
-## Пробный период и защита от мультиаккаунтов
+## Trial period and multi-account protection
 
-Триал выдаётся один раз и открывает тариф Pro на `TRIAL_DAYS` суток
-(подписка со статусом `trialing` и источником `trial`). Дальше ей
-занимается тот же воркер, что и оплаченными: предупредит за сутки и
-закроет доступ по истечении.
+The trial is granted once and opens the Pro plan for `TRIAL_DAYS` days (a
+subscription with status `trialing` and source `trial`). From there the same
+worker handles it as it handles paid ones: it warns a day ahead and closes
+access when the period ends.
 
-Обойти выдачу можно тремя способами, и каждый закрыт своим механизмом:
+There are three ways to bypass the grant, and each is closed by its own
+mechanism:
 
-| Обход | Защита | Где реализовано |
+| Bypass | Protection | Where it lives |
 |---|---|---|
-| Повторный запрос тем же аккаунтом | Отметка `users.trial_activated_at` | `User.mark_trial_started` |
-| Новый аккаунт с тем же телефоном | `UNIQUE(kind, fingerprint)` в `trial_claims` | `UserRepository.register_trial_fingerprints` |
-| Два одновременных нажатия | Advisory-блокировка по `user_id` + перечитывание строки под ней | `TrialService.activate` |
-| Пересланный чужой контакт | Сверка `contact.user_id` с автором сообщения | `tg_bot.handlers.trial._own_phone` |
+| Asking again from the same account | The `users.trial_activated_at` mark | `User.mark_trial_started` |
+| A new account with the same phone | `UNIQUE(kind, fingerprint)` in `trial_claims` | `UserRepository.register_trial_fingerprints` |
+| Two simultaneous taps | An advisory lock on `user_id` plus re-reading the row under it | `TrialService.activate` |
+| A forwarded contact of someone else | Comparing `contact.user_id` with the message author | `tg_bot.handlers.trial._own_phone` |
 
-**Почему телефон, а не IP.** У Bot API нет ни адреса пользователя, ни
-идентификатора устройства — единственный признак, подтверждённый самим
-Telegram, это номер, присланный кнопкой `request_contact`. Значения
-`TrialFingerprintKind.IP` и `DEVICE` оставлены для веб-версии и mini app.
+**Why the phone and not the IP.** The Bot API exposes neither the user's
+address nor a device identifier — the only attribute confirmed by Telegram
+itself is the number sent through a `request_contact` button. The
+`TrialFingerprintKind.IP` and `DEVICE` values are reserved for a web version
+and a mini app.
 
-**Почему сверяется `contact.user_id`.** Контакт можно выбрать из адресной
-книги и прислать боту как обычное сообщение. Такой контакт приходит с
-чужим `user_id` либо вовсе без него, и проверка только по самому номеру
-позволяла бы активировать триал по номерам всех знакомых.
+**Why `contact.user_id` is verified.** A contact can be picked from the address
+book and sent to the bot as an ordinary message. Such a contact arrives with
+someone else's `user_id` or none at all, and checking the number alone would
+allow activating trials with every acquaintance's number.
 
-**Что попадает в базу.** Только HMAC-SHA256 от нормализованного номера с
-серверным секретом. Обычного SHA-256 недостаточно: всё пространство
-российских номеров перебирается за минуты, и хэш не защитил бы ничего.
-Форматирование значения роли не играет — `+7 (900) 123-45-67` и
-`79001234567` дают один отпечаток.
+**What reaches the database.** Only HMAC-SHA256 of the normalised number with a
+server-side secret. Plain SHA-256 is not enough: the entire space of Russian
+numbers can be enumerated in minutes, and the hash would protect nothing.
+Formatting is irrelevant — `+7 (900) 123-45-67` and `79001234567` produce the
+same fingerprint.
 
-**Порядок операций** в `TrialService.activate` выбран так, чтобы неудача
-ни на одном шаге не отняла у человека право на триал: сначала проверки
-состояния, затем резервирование отпечатка, и только потом отметка об
-активации и создание подписки. Всё выполняется в одной транзакции, и
-отказ откатывает в том числе занятый отпечаток — отвергнутый аккаунт
-может попробовать снова с другим номером.
+**The order of operations** in `TrialService.activate` is chosen so that a
+failure at any step cannot take away someone's right to a trial: state checks
+first, then reserving the fingerprint, and only then the activation mark and
+the subscription. It all runs in one transaction, and a rejection rolls back
+the claimed fingerprint too — a rejected account may try again with a different
+number.
 
-**Секрет `TRIAL_FINGERPRINT_SECRET` обязателен** при включённой проверке
-телефона: приложение не стартует без него. Менять его после запуска
-нельзя — ранее посчитанные отпечатки перестанут совпадать, и каждый
-пользователь получит право на второй триал.
+**`TRIAL_FINGERPRINT_SECRET` is mandatory** when phone verification is on: the
+application will not start without it. It must not be changed after launch —
+previously computed fingerprints would stop matching and every user would
+become eligible for a second trial.
 
-Отключить проверку телефона можно через `TRIAL_REQUIRE_CONTACT=false`, но
-тогда триал достаётся любому новому аккаунту — это режим для локальной
-разработки, не для продакшена.
+Phone verification can be turned off with `TRIAL_REQUIRE_CONTACT=false`, but
+then any new account gets the trial — a mode for local development, not for
+production.
 
-## Личный кабинет
+## Personal cabinet
 
-`/cabinet` — четыре раздела: источники, каналы для автопостинга, фильтр
-слов и статус подписки. Три сценария настройки построены на FSM, потому
-что каждый требует свободного ввода: ссылку, пересланное сообщение или
-список слов не уместить в `callback_data` — там 64 байта, и приходят они
-от клиента.
+`/cabinet` has four sections: sources, auto-posting channels, the word filter
+and subscription status. Three of the setup flows are built on FSM because each
+needs free-form input: a link, a forwarded message or a list of words does not
+fit into `callback_data` — 64 bytes, and supplied by the client at that.
 
-**Валидация опирается на внешний источник правды, а не на форму строки.**
-Источник проверяется попыткой прочитать канал: имя вида `@channel` бывает
-синтаксически безупречным и при этом принадлежать закрытому или
-несуществующему каналу. Цель публикации проверяется через
-`get_chat_member` — единственный способ узнать, может ли бот туда писать,
-это спросить Telegram. Администратор без права публикации отделён от «не
-администратора»: подсказки пользователю разные.
+**Validation relies on an external source of truth, not on the shape of the
+string.** A source is validated by trying to read the channel: a name like
+`@channel` can be syntactically perfect and still belong to a private or
+non-existent channel. A publication target is validated through
+`get_chat_member` — the only way to learn whether the bot can post there is to
+ask Telegram. An admin without posting rights is distinguished from a
+non-admin: the two need different hints.
 
-**Приватный канал добавляется пересылкой.** У него нет имени, и указать
-его иначе невозможно — `_extract_channel_reference` сначала смотрит на
-`forward_from_chat` и только потом на текст.
+**A private channel is added by forwarding.** It has no username and cannot be
+referenced any other way — `_extract_channel_reference` looks at
+`forward_from_chat` first and only then at the text.
 
-**Проверка прав повторяемая.** Права снимают так же легко, как выдают,
-поэтому у каждого целевого канала есть кнопка перепроверки, а результат
-кэшируется в `user_channels.bot_is_admin`, чтобы не спрашивать Telegram
-перед каждой публикацией.
+**The rights check is repeatable.** Rights are revoked as easily as they are
+granted, so every target channel has a re-check button, and the result is
+cached in `user_channels.bot_is_admin` to avoid asking Telegram before every
+publication.
 
-Владелец входит в условие запроса при удалении канала и слова:
-идентификатор приходит из `callback_data`, и без проверки чужая запись
-удалялась бы по подобранному номеру.
+The owner is part of the query condition when deleting a channel or a word: the
+id arrives in `callback_data`, and without the check someone else's row could
+be deleted by guessing a number.
 
-## Локализация
+## Localisation
 
-Интерфейс доступен на русском, английском и украинском. Строки лежат в
-`locales/<код>.json`, каталоги читаются на старте и живут в памяти:
-перечитывать файл на каждое сообщение расточительно, а следить за
-изменениями на диске — источник гонок при выкатке.
+The interface is available in Russian, English and Ukrainian. Strings live in
+`locales/<code>.json`; the catalogues are read at startup and kept in memory:
+re-reading a file for every message is wasteful, and watching the disk for
+changes is a source of races during a rollout.
 
-**Почему JSON, а не Fluent или gettext.** Объём текста измеряется
-десятками строк, и переводят их разработчики. Fluent потребовал бы ещё
-одну зависимость и свой синтаксис ради возможностей, которые здесь не
-нужны, gettext — цикла компиляции `.po` → `.mo` при каждой правке. JSON
-правится в любом редакторе, а согласованность каталогов проверяется
-тестом: одинаковый набор ключей и одинаковые подстановки во всех языках.
+**Why JSON and not Fluent or gettext.** The volume of text is measured in tens
+of strings, and developers do the translating. Fluent would add one more
+dependency and its own syntax for capabilities that are not needed here;
+gettext would add a `.po` → `.mo` compilation cycle on every edit. JSON is
+editable in any editor, and catalogue consistency is verified by a test: the
+same set of keys and the same substitutions in every language.
 
-**Множественные формы.** Единственное, чего не хватает плоскому подходу.
-«Осталось 1 день / 2 дня / 5 дней» — три формы в русском и украинском,
-две в английском; подстановка числа без учёта формы читается как
-машинный перевод. Правила соответствуют CLDR и заданы в
-`select_plural_form`.
+**Plural forms.** The one thing a flat approach lacks. "1 day / 2 days / 5 days
+left" is three forms in Russian and Ukrainian, two in English; substituting a
+number without regard for the form reads like machine translation. The rules
+follow CLDR and live in `select_plural_form`.
 
-**Откуда берётся язык.** Порядок идёт от дешёвого источника к дорогому:
-кэш (Redis либо память процесса) → уже загруженная строка пользователя →
-запрос в базу → подсказка `language_code` от клиента Telegram. Выбор
-человека при этом всегда старше подсказки клиента: `users.language`
-проставляется только при создании записи и меняется лишь через
-`/language`.
+**Where the language comes from.** The order goes from the cheap source to the
+expensive one: cache (Redis or process memory) → an already loaded user row →
+a database query → the `language_code` hint from the Telegram client. The
+person's choice always outranks the client hint: `users.language` is only set
+when the row is created and changes solely through `/language`.
 
-**Смена языка** сохраняется сначала в базу, потом в кэш. Обратный порядок
-оставил бы кэш «впереди» базы при откате транзакции. Подтверждение
-приходит уже на новом языке — иначе человек нажимал бы «English» и читал
-ответ по-русски.
+**A language switch** is saved to the database first and to the cache second.
+The reverse order would leave the cache ahead of the database if the
+transaction rolled back. The confirmation arrives already in the new language —
+otherwise someone would press "English" and read the reply in Russian.
 
-**Ошибки тоже переведены.** Исключения биллинга и триала несут ключ
-перевода, а не готовую фразу: сервисный слой языка не знает, а текст
-внутри исключения остаётся для логов. Уведомления воркера уходят на языке
-получателя — он не выбирал момент рассылки и тем более не ждёт её
-по-русски.
+**Errors are translated too.** Billing and trial exceptions carry a translation
+key rather than a ready-made phrase: the service layer knows nothing about
+language, and the text inside the exception stays for the logs. Worker
+notifications go out in the recipient's language — they did not choose the
+moment of delivery, let alone expect it in Russian.
 
-Недоступность Redis не ломает локализацию: кэш деградирует в промах, и
-язык поднимается из базы.
+Redis being unavailable does not break localisation: the cache degrades into a
+miss and the language is loaded from the database.
 
-## Оплата: Telegram Stars
+## Payments: Telegram Stars
 
-Подписка оплачивается звёздами — внутри Telegram, без карт и внешнего
-эквайринга, поэтому `provider_token` не используется. Каталог тарифов живёт
-в `core/pricing.py`: цены участвуют в сверке суммы платежа и должны быть
-одинаковыми во всех репликах в момент выкатки.
+Subscriptions are paid for with Stars — inside Telegram, without cards or an
+external acquirer, so no `provider_token` is used. The plan catalogue lives in
+`core/pricing.py`: prices take part in verifying the payment amount and must be
+identical across all replicas at the moment of a rollout.
 
-Путь оплаты состоит из трёх шагов, и каждый может прийти повторно:
+The payment path has three steps, and each of them can arrive more than once:
 
-| Шаг | Что происходит | Защита |
+| Step | What happens | Protection |
 |---|---|---|
-| Выставление счёта | Строка `payments` в статусе `pending` с TTL | Лимит незавершённых счетов, `SingleFlightMiddleware` от двойного нажатия |
-| `PreCheckoutQuery` | Сверка суммы, валюты, плательщика и срока; статус → `processing` | Ответ обязан уложиться в 10 секунд, поэтому троттлинг для него отключён |
-| `SuccessfulPayment` | Подтверждение платежа и начисление дней | Блокировка строки платежа + уникальный `payment_id` в журнале подписки |
+| Invoice creation | A `payments` row in status `pending` with a TTL | A cap on unfinished invoices, `SingleFlightMiddleware` against a double tap |
+| `PreCheckoutQuery` | Amount, currency, payer and deadline are verified; status → `processing` | The answer must fit into 10 seconds, so throttling is disabled for it |
+| `SuccessfulPayment` | Payment confirmation and day granting | A row lock on the payment plus a unique `payment_id` in the subscription log |
 
-`invoice_payload` приходит от клиента, поэтому на шаге `PreCheckoutQuery`
-сверяется не только существование счёта, но и сумма, валюта и плательщик —
-иначе по чужому счёту можно было бы оплатить свой тариф.
+`invoice_payload` comes from the client, so the `PreCheckoutQuery` step verifies
+not only that the invoice exists but also the amount, the currency and the
+payer — otherwise someone else's invoice could be used to pay for your own plan.
 
-Тонкость начисления: если подписка создаётся этим же платежом, оплаченный
-период уже заложен в её срок, и продлевать нечего — но запись о платеже всё
-равно делается, иначе повторная доставка события продлила бы подписку.
+A subtlety of granting: if the subscription is created by this very payment,
+the paid period is already built into its deadline and there is nothing to
+extend — but the payment record is still written, otherwise a redelivered event
+would extend the subscription.
 
-## Трекинг ссылок
+## Link tracking
 
-Внешние ссылки в постах подменяются короткими вида
-`{TRACKER_BASE_URL}/r/{code}`, переходы по ним считаются, а владелец
-смотрит отчёт командой `/stats`. Без `TRACKER_BASE_URL` подмена
-отключена: короткая ссылка обязана вести на сервер, доступный из
-интернета, и выдумать его за пользователя нельзя.
+Outbound links in posts are replaced with short ones of the form
+`{TRACKER_BASE_URL}/r/{code}`, clicks are counted, and the owner reads the
+report with `/stats`. Without `TRACKER_BASE_URL` the rewriting is disabled: a
+short link must point at a server reachable from the internet, and that cannot
+be invented on the user's behalf.
 
-**Редирект лежит на горячем пути** — по ссылке идёт живой человек. Поэтому
-в обработчике нет ни одной записи в PostgreSQL: адрес берётся из кэша
-Redis, а переход кладётся в очередь, которую разбирает фоновая задача
-`click_flush`. Промах кэша стоит одного запроса к базе и прогрева.
+**The redirect sits on the hot path** — a real person is following that link.
+So the handler performs no PostgreSQL writes at all: the address comes from the
+Redis cache, and the click is put into a queue that the `click_flush` background
+job drains. A cache miss costs one database query and a warm-up.
 
-**Ответ — 307, а не 301.** Постоянный редирект браузеры кэшируют навсегда:
-второй переход по ссылке до нас просто не дошёл бы, и статистика
-показала бы один клик вместо сотни. По той же причине ответ помечается
+**The answer is 307, not 301.** Browsers cache a permanent redirect forever:
+the second click would never reach us, and the statistics would show one click
+instead of a hundred. For the same reason the response is marked
 `Cache-Control: no-store`.
 
-**Цена буфера честная:** падение Redis теряет переходы, накопленные с
-последнего сброса. Для аналитики это допустимо — деньги или доступ так
-терять нельзя, несколько кликов можно. События из очереди именно
-забираются, а не читаются: повторный сброс тех же строк удвоил бы
-счётчики.
+**The buffer's price is honest:** losing Redis loses the clicks accumulated
+since the last flush. For analytics that is acceptable — money or access cannot
+be lost that way, a few clicks can. Events are *taken* from the queue rather
+than read: re-flushing the same rows would double the counters.
 
-**Уникальные переходы считает база.** У журнала есть
-`UNIQUE(link_id, visitor_hash)`, и `ON CONFLICT DO NOTHING` отвечает на
-вопрос «этот посетитель здесь впервые?» без отдельной проверки — то же
-ограничение защищает и от повторного сброса одной пачки.
+**Unique clicks are counted by the database.** The log has
+`UNIQUE(link_id, visitor_hash)`, and `ON CONFLICT DO NOTHING` answers "is this
+visitor here for the first time?" without a separate check — the same
+constraint also protects against re-flushing one batch.
 
-**Адрес посетителя не хранится:** в базу идёт HMAC от связки «IP +
-User-Agent» с тем же секретом, что и отпечатки пробного периода.
+**The visitor's address is not stored:** what goes into the database is an HMAC
+of the "IP + User-Agent" pair with the same secret as the trial fingerprints.
 
-**CTR в прямом смысле недоступен:** для него нужен знаменатель — число
-показов, а сколько человек увидело пост в чужом канале, Telegram не
-сообщает. Вместо него отчёт показывает долю повторных переходов: это
-отвечает на вопрос «интерес разных людей или один кликал много раз».
+**CTR is literally unavailable:** it needs a denominator — the number of
+impressions — and Telegram does not report how many people saw a post in
+someone else's channel. Instead the report shows the share of repeat clicks,
+which answers the question "was this several people's interest or one person
+clicking a lot?".
 
-| Переменная | По умолчанию | Назначение |
+| Variable | Default | Purpose |
 |---|---|---|
-| `TRACKER_BASE_URL` | — | Публичный адрес редиректа; пусто — подмена отключена |
-| `TRACKER_LINK_TTL_DAYS` | `0` | Срок жизни короткой ссылки; 0 — бессрочно |
-| `WORKER_CLICK_FLUSH_INTERVAL` | `60` | Как часто переносить переходы в базу, секунды |
+| `TRACKER_BASE_URL` | — | Public address of the redirect; empty disables rewriting |
+| `TRACKER_LINK_TTL_DAYS` | `0` | Short link lifetime; 0 means unlimited |
+| `WORKER_CLICK_FLUSH_INTERVAL` | `60` | How often clicks are moved into the database, seconds |
 
-## Оплата криптовалютой: CryptoBot
+## Crypto payments: CryptoBot
 
-Второй способ оплаты рядом со звёздами. Включается токеном
-`CRYPTO_BOT_TOKEN`; без него раздел просто не показывается, и бот
-работает как раньше — требовать регистрации в стороннем сервисе ради
-локального запуска незачем.
+A second payment method next to Stars. Enabled by the `CRYPTO_BOT_TOKEN`; without
+it the section is simply not shown and the bot works as before — there is no
+reason to require registration with a third-party service just to run locally.
 
-**Идемпотентность — та же, что у звёзд, и это не совпадение.**
-`confirm_payment` блокирует строку платежа, `apply_payment_grant`
-опирается на уникальность `payment_id` в журнале подписки. Оба
-ограничения не зависят от провайдера, поэтому добавление CryptoBot не
-потребовало нового механизма защиты от двойных начислений.
+**Idempotency is the same as for Stars, and that is not a coincidence.**
+`confirm_payment` locks the payment row, `apply_payment_grant` relies on the
+uniqueness of `payment_id` in the subscription log. Neither constraint depends
+on the provider, so adding CryptoBot required no new mechanism against double
+granting.
 
-**Строка `payments` создаётся до обращения к провайдеру.** Обратный
-порядок оставил бы счёт существующим в CryptoBot и несуществующим у нас:
-пришедший по нему вебхук было бы не к чему привязать — деньги списаны,
-начислять некому.
+**The `payments` row is created before the provider is called.** The reverse
+order would leave an invoice that exists in CryptoBot and not with us: a webhook
+arriving for it would have nothing to attach to — money taken, nobody to credit.
 
-**Подпись вебхука проверяется до всего остального.** Это единственный
-публично доступный вход в приложение: без проверки любой желающий
-начислил бы себе подписку, отправив подходящий JSON. Сравнение идёт
-через `hmac.compare_digest` — обычное `==` завершается на первом
-несовпавшем байте, и по времени ответа подпись подбирается посимвольно.
+**The webhook signature is verified before anything else.** This is the only
+publicly reachable entry point into the application: without the check, anyone
+could grant themselves a subscription by posting suitable JSON. The comparison
+goes through `hmac.compare_digest` — a plain `==` stops at the first mismatched
+byte, and the response time lets the signature be guessed character by
+character.
 
-**Вебхуку всегда отвечаем быстро и по возможности 200.** CryptoBot
-повторяет доставку, пока не получит успешный ответ, поэтому ошибка в
-ответ на дубликат означала бы бесконечный цикл повторов. Успехом
-отвечаем и на повторную доставку, и на события, которые нас не касаются.
+**Webhooks always get a fast answer, and a 200 when possible.** CryptoBot
+retries delivery until it receives a success, so answering a duplicate with an
+error would mean an endless retry loop. Success is returned both for repeat
+deliveries and for events that do not concern us.
 
-**Повторяем только то, что безопасно повторить.** Создание счёта
-переживает сетевые сбои и ответы 5xx; ошибки 4xx не повторяются — второй
-такой же запрос будет отвергнут точно так же.
+**Only what is safe to retry is retried.** Invoice creation survives network
+failures and 5xx responses; 4xx errors are not retried — the same request would
+be rejected exactly the same way.
 
-**Недоплата не открывает доступ**, переплата — открывает: деньги уже
-переведены, и вернуть их сложнее, чем отдать оплаченное.
+**An underpayment does not open access; an overpayment does:** the money has
+already been transferred, and returning it is harder than delivering what was
+paid for.
 
-| Переменная | По умолчанию | Назначение |
+| Variable | Default | Purpose |
 |---|---|---|
-| `CRYPTO_BOT_TOKEN` | — | Токен приложения Crypto Pay; пусто — оплата отключена |
-| `CRYPTO_BOT_API_URL` | `https://pay.crypt.bot/api` | Адрес API (для testnet — свой) |
-| `CRYPTO_BOT_WEBHOOK_PATH` | `/webhook/cryptobot` | Путь приёмника; должен совпадать с настройками приложения |
-| `CRYPTO_BOT_WEBHOOK_HOST` / `PORT` | `0.0.0.0` / `8080` | Где слушать вебхуки |
-| `CRYPTO_BOT_INVOICE_TTL_MINUTES` | `60` | Срок жизни криптосчёта |
-| `CRYPTO_BOT_TIMEOUT` | `15` | Таймаут обращения к API, секунды |
+| `CRYPTO_BOT_TOKEN` | — | Crypto Pay application token; empty disables the method |
+| `CRYPTO_BOT_API_URL` | `https://pay.crypt.bot/api` | API address (testnet has its own) |
+| `CRYPTO_BOT_WEBHOOK_PATH` | `/webhook/cryptobot` | Receiver path; must match the application settings |
+| `CRYPTO_BOT_WEBHOOK_HOST` / `PORT` | `0.0.0.0` / `8080` | Where webhooks are listened for |
+| `CRYPTO_BOT_INVOICE_TTL_MINUTES` | `60` | Crypto invoice lifetime |
+| `CRYPTO_BOT_TIMEOUT` | `15` | API call timeout, seconds |
 
-## Привлечение: рефералы и промокоды
+## Growth: referrals and promo codes
 
-Оба механизма заканчиваются одним и тем же — начислением суток подписки, — и
-оба обязаны быть устойчивы к повторному нажатию. Человек, не увидевший
-мгновенного ответа, жмёт кнопку ещё раз; Telegram доставляет апдейт повторно;
-реплик бота может быть несколько. Однократность поэтому держится не на
-проверках в коде, а на уникальных индексах:
+Both mechanisms end in the same thing — granting subscription days — and both
+have to survive a repeated tap. Someone who sees no immediate answer presses the
+button again; Telegram redelivers the update; there may be several bot replicas.
+Exactly-once therefore rests on unique indexes rather than on checks in code:
 
-* `referrals.referred_id` — приглашённый учитывается ровно один раз за всю
-  историю, каким бы числом ссылок он ни пришёл;
-* `promocode_redemptions (promocode_id, user_id)` — один код на человека.
+* `referrals.referred_id` — an invitee is counted exactly once, ever, no matter
+  how many links they arrived through;
+* `promocode_redemptions (promocode_id, user_id)` — one code per person.
 
-Порядок операций от этого зависит напрямую: сначала вставка строки-ключа
-(`INSERT ... ON CONFLICT DO NOTHING RETURNING`), и только если она состоялась —
-начисление, в той же транзакции. Проверка «а не начисляли ли мы уже» отдельным
-`SELECT` оставляла бы окно, в которое пролезает второй одновременный запрос.
+The order of operations follows directly from that: insert the key row first
+(`INSERT ... ON CONFLICT DO NOTHING RETURNING`), and only if it succeeded, grant
+the reward — in the same transaction. A separate `SELECT` asking "have we
+granted this already?" would leave a window for a second concurrent request to
+slip through.
 
-**Реферальная ссылка.** Вход один — `/start ref_<КОД>`; другого способа
-передать полезную нагрузку у Telegram нет. Бонус получают обе стороны сразу
-при переходе, размер задаёт `REFERRAL_BONUS_DAYS` (по умолчанию 3 суток).
+**The referral link.** There is one entry point — `/start ref_<CODE>`; Telegram
+offers no other way to pass a payload. Both sides get their bonus immediately on
+arrival, and its size is set by `REFERRAL_BONUS_DAYS` (3 days by default).
 
-Плата за мгновенное начисление — уязвимость к накрутке пустыми аккаунтами.
-Сдерживают её те же отпечатки, что защищают пробный период, но полностью
-вопрос закрывает только политика «бонус после первой оплаты». Она в модели уже
-выражена: состояние `qualified` и метод `Referral.qualify(payment_id, ...)`
-существуют и работают, переключение не требует ни миграции, ни изменения схемы —
-достаточно перенести вызов `reward()` из `/start` в обработчик успешного платежа.
+The price of instant granting is vulnerability to farming with empty accounts.
+It is held back by the same fingerprints that protect the trial, but the
+question is only fully closed by a "bonus after the first payment" policy. That
+policy is already expressed in the model: the `qualified` state and the
+`Referral.qualify(payment_id, ...)` method exist and work, and switching over
+needs neither a migration nor a schema change — it is enough to move the
+`reward()` call from `/start` into the successful-payment handler.
 
-Сменить пригласившего задним числом нельзя: условие `referred_by_id IS NULL`
-входит в сам `UPDATE`, а не проверяется в коде, поэтому два одновременных
-перехода по разным ссылкам не могут переписать «родителя» друг у друга.
+The inviter cannot be changed after the fact: the `referred_by_id IS NULL`
+condition is part of the `UPDATE` itself rather than a check in code, so two
+simultaneous arrivals through different links cannot overwrite each other's
+"parent".
 
-**Промокоды.** Активация — `/promo <КОД>` или кнопка в кабинете. Строка кода
-блокируется на запись (`SELECT ... FOR UPDATE`) на время проверки: без этого
-два одновременных применения последнего оставшегося кода прочитали бы
-одинаковый счётчик и оба сочли бы лимит незаполненным. От выхода за лимит
-страхует ещё и `CHECK (activations <= max_activations)` — даже ошибка в
-прикладном коде не превратит код в бесконечный.
+**Promo codes.** Redemption is `/promo <CODE>` or a button in the cabinet. The
+code row is locked for writing (`SELECT ... FOR UPDATE`) for the duration of the
+check: without it, two simultaneous redemptions of the last remaining code would
+read the same counter and both consider the limit unmet. Going over the limit is
+additionally prevented by `CHECK (activations <= max_activations)` — even a bug
+in application code cannot turn a code into an infinite one.
 
-Причины отказа различаются намеренно. «Код закончился», «срок истёк», «вы уже
-применяли этот код» — разные новости: в первом случае человек пойдёт искать
-другой код, в третьем это бессмысленно. Отдельно разбирается случай, когда
-код исчерпан самим обратившимся: сказать ему «код разобрали» было бы неверно.
+Rejection reasons differ on purpose. "The code is used up", "it has expired" and
+"you already used this code" are different news: in the first case the person
+will go looking for another code, in the third that is pointless. The case where
+the code was exhausted by the very person asking is handled separately: telling
+them "the code is gone" would be wrong.
 
-Скидочные коды (`discount_percent`) и коды, привязанные к тарифу, отдельной
-командой не активируются: и проценты, и «дни этого тарифа» вне оплаты не
-определены. Такие коды применяются на кассе.
+Discount codes (`discount_percent`) and codes tied to a plan are not redeemed by
+a standalone command: neither percentages nor "days of this plan" are defined
+outside a payment. Such codes are applied at checkout.
 
-Создаёт коды администратор: `/newpromo <дней> [лимит] [пометка]`. Сам код
-генерируется случайно из алфавита без визуально неоднозначных символов —
-придуманные вручную коды рано или поздно сталкиваются друг с другом.
+Codes are created by an administrator: `/newpromo <days> [limit] [note]`. The
+code itself is generated at random from an alphabet without visually ambiguous
+characters — hand-invented codes collide with each other sooner or later.
 
-## Панель администратора и рассылка
+## Admin panel and broadcasts
 
-Права проверяет фильтр `IsAdmin`, повешенный на роутер целиком, а не первая
-строка каждого хендлера. Разница не косметическая: не прошедший фильтр апдейт
-вообще не считается обработанным, поэтому для постороннего `/admin` неотличим
-от любого другого незнакомого текста — бот на него просто не отвечает.
-Проверка внутри обработчика, наоборот, выдала бы сам факт существования
-команды. Фильтр на роутере ещё и не даёт забыть о правах, добавляя сюда новый
-хендлер.
+Rights are checked by the `IsAdmin` filter attached to the whole router rather
+than by the first line of every handler. The difference is not cosmetic: an
+update that fails the filter is not considered handled at all, so to an outsider
+`/admin` is indistinguishable from any other unknown text — the bot simply does
+not reply. A check inside the handler, by contrast, would reveal that the
+command exists. A router-level filter also makes it impossible to forget about
+rights when adding a new handler here.
 
-Источников прав два. Флаг `users.is_admin` — рабочий: выдаётся и снимается на
-ходу. Список `ADMIN_IDS` в окружении — стартовый: первый флаг в базе кто-то
-должен выставить, а сделать это через бота может только тот, у кого права уже
-есть.
+There are two sources of rights. The `users.is_admin` flag is the working one:
+granted and revoked on the fly. The `ADMIN_IDS` list in the environment is the
+bootstrap one: someone has to set the first flag in the database, and only
+someone who already has rights can do that through the bot.
 
-**Метрики** (`/admin`) собираются одним снимком: счётчики пользователей — за
-один проход по таблице вместо пяти, распределение подписок — группировкой,
-выручка — агрегатом по успешным платежам.
+**Metrics** (`/admin`) are collected as a single snapshot: user counters in one
+pass over the table instead of five, the subscription breakdown by grouping,
+revenue as an aggregate over successful payments.
 
-Две оговорки, важные для чтения панели:
+Two caveats matter when reading the panel:
 
-* «Доход за 30 дней» — это сумма успешных платежей, а не MRR. Подписка
-  продаётся разовыми периодами, автопродления нет, и регулярную выручку
-  считать не из чего. При заметной доле годовых оплат число скачет.
-* Валюты не складываются. Звёзды и USDT — разные единицы, курса между ними в
-  базе нет, и «общая сумма» из них была бы просто неверной; панель показывает
-  их раздельно.
+* "Revenue over 30 days" is the sum of successful payments, not MRR. The
+  subscription is sold as one-off periods, there is no auto-renewal, and there
+  is nothing to compute recurring revenue from. With a noticeable share of
+  annual payments the number jumps.
+* Currencies are not added together. Stars and USDT are different units, there
+  is no exchange rate between them in the database, and a "total" made of them
+  would simply be wrong; the panel shows them separately.
 
-Конверсия считается по двум знаменателям сразу: доля заплативших от всех
-зарегистрированных (занижена — в знаменатель попадают те, кто пришёл минуту
-назад) и от дошедших до пробного периода (честнее как воронка). В числителе
-везде число *плательщиков*, а не платежей: один человек с пятью продлениями —
-по-прежнему один оплативший.
+Conversion is computed against two denominators at once: the share of payers
+among everyone registered (understated — the denominator includes those who
+arrived a minute ago) and among those who reached the trial (a fairer funnel).
+The numerator is always the number of *payers*, not of payments: one person with
+five renewals is still one paying customer.
 
-**Рассылка** устроена вокруг трёх ограничений.
+**Broadcasts** are built around three constraints.
 
-*Лимит Bot API* — около тридцати сообщений в секунду на бота целиком.
-Превышение отзывается flood control не на рассылку, а на всего бота, включая
-ответы в диалогах. Поэтому жетоны берутся из того же ведра, что и уведомления
-воркера с публикациями: своё ведро у рассылки означало бы, что суммарная
-скорость никем не ограничена. Скорость задаёт `BROADCAST_RATE` (25 по
-умолчанию — запас на остальные отправки).
+*The Bot API limit* — about thirty messages per second for the bot as a whole.
+Exceeding it earns flood control against the entire bot, not just the broadcast,
+replies in private chats included. So tokens are taken from the same bucket as
+worker notifications and publications: a dedicated bucket for broadcasts would
+mean nothing limits the combined rate. The speed is set by `BROADCAST_RATE` (25
+by default — headroom for everything else being sent).
 
-*Размер базы.* Получатели читаются страницами по курсору `id > after_id`, а не
-одним запросом и не через `OFFSET`: рассылка по большой базе идёт минутами, за
-это время появляются новые пользователи, и смещение начало бы пропускать и
-повторять строки. Соединение с базой между страницами отдаётся обратно в пул.
+*The size of the user base.* Recipients are read in pages by an `id > after_id`
+cursor rather than in one query or through `OFFSET`: a broadcast over a large
+base runs for minutes, new users appear meanwhile, and an offset would start
+skipping and repeating rows. The database connection is returned to the pool
+between pages.
 
-*Недоступные адресаты.* Ответ 403 и «chat not found» означают, что писать
-этому человеку бесполезно навсегда. Такие получатели помечаются
-`users.is_bot_blocked` пачками и выпадают из следующих рассылок — иначе каждая
-новая рассылка тратила бы на них жетоны общего лимита. Отдельная тонкость:
-«чата нет» Telegram отдаёт кодом 400, а не 404, поэтому `TelegramNotFound`
-здесь не срабатывает и признак ищется в тексте ошибки.
+*Unreachable recipients.* A 403 and "chat not found" mean writing to this person
+is pointless forever. Such recipients are flagged in `users.is_bot_blocked` in
+batches and drop out of subsequent broadcasts — otherwise every new broadcast
+would spend shared-limit tokens on them. One subtlety: Telegram returns "chat
+not found" with code 400 rather than 404, so `TelegramNotFound` does not fire
+here and the condition is detected in the error text.
 
-Сообщение не пересобирается, а копируется (`copy_message`) из того, что
-администратор прислал боту: так переносятся медиа, подписи и форматирование
-как есть. Пересборка на нашей стороне потребовала бы отдельной ветки под
-каждый тип вложения и потеряла бы оформление на первом же нестандартном
-случае. Копия, а не пересылка — у пересланного сообщения виден источник, то
-есть личный чат администратора. Кнопки задаются строками
-`Текст | https://example.com`.
+The message is not rebuilt but copied (`copy_message`) from what the
+administrator sent to the bot: media, captions and formatting carry over as they
+are. Rebuilding on our side would require a separate branch per attachment type
+and would lose the formatting on the first non-standard case. A copy rather than
+a forward — a forwarded message shows its source, which is the administrator's
+private chat. Buttons are declared as lines of `Text | https://example.com`.
 
-Аудитории три: все, с активной оплаченной подпиской, с истёкшим триалом.
-Последняя — та самая группа, ради которой рассылки обычно и затеваются:
-человек попробовал продукт и ушёл. Отбор идёт по срокам, а не только по
-статусу, потому что воркер помечает подписки истёкшими не мгновенно, и между
-истечением и его проходом человек не должен попасть в «активные».
+There are three audiences: everyone, holders of an active paid subscription, and
+people whose trial expired. The last one is the group broadcasts usually exist
+for: someone tried the product and left. Selection goes by deadlines rather than
+by status alone, because the worker does not mark subscriptions expired
+instantly, and between expiry and its pass a person must not land in "active".
 
-Рассылка выполняется фоновой задачей: держать апдейт открытым на всё время
-отправки нельзя — вместе с ним держалась бы и транзакция БД. Прогресс
-показывается в редактируемом сообщении, остановка — мягкая: начатые отправки
-доводятся до конца, новые не начинаются. Состояние живёт в памяти процесса,
-поэтому перезапуск бота рассылку прерывает и продолжить с середины нельзя;
-таблица с курсором окупилась бы только на по-настоящему больших базах.
+A broadcast runs as a background job: the update cannot be held open for the
+whole send — a database transaction would be held with it. Progress is shown in
+an edited message, and stopping is graceful: sends already started are finished,
+new ones are not begun. The state lives in process memory, so restarting the bot
+interrupts a broadcast and it cannot be resumed from the middle; a table with a
+cursor would only pay off on a genuinely large user base.
 
-Интерфейс панели русскоязычный, в отличие от остальной части бота: его видит
-оператор сервиса, а не клиент, и переводить его на три языка ради экранов,
-которые открывает один человек, незачем. Всё, что уходит конечному
-пользователю — сообщение о реферальном бонусе, результат промокода, —
-локализовано как обычно.
+The panel's interface is in Russian, unlike the rest of the bot: it is seen by
+the service operator, not by a customer, and translating it into three languages
+for screens one person opens is pointless. Everything that reaches an end user —
+the referral bonus message, the promo code result — is localised as usual.
 
-## Ограничение частоты и анти-спам
+## Rate limiting and anti-spam
 
-Ограничитель работает по алгоритму token bucket: он допускает короткие
-всплески (человек нажимает кнопку несколько раз подряд), но удерживает
-среднюю скорость. Вся арифметика ведра выполняется одним Lua-скриптом на
-стороне Redis — последовательность «прочитать, посчитать, записать»
-отдельными командами не атомарна, и два одновременных запроса превысили бы
-лимит ровно в тех условиях, ради которых он и вводится.
+The limiter uses a token bucket: it allows short bursts (a person tapping a
+button a few times in a row) while holding the average rate. All of the bucket's
+arithmetic runs as a single Lua script on the Redis side — the sequence "read,
+compute, write" as separate commands is not atomic, and two concurrent requests
+would exceed the limit under exactly the conditions the limit exists for.
 
-| Уровень защиты | Что делает |
+| Layer of protection | What it does |
 |---|---|
-| `ThrottlingMiddleware` | Общий лимит на сообщения и на нажатия (раздельные вёдра) |
-| Флаг `rate_limit(...)` | Индивидуальный лимит конкретного хендлера |
-| `SingleFlightMiddleware` | Не даёт одному нажатию обработаться дважды одновременно |
-| `AntiFloodPolicy` | Эскалация: систематический флуд → временная заглушка нарастающей длительности |
+| `ThrottlingMiddleware` | A shared limit on messages and on taps (separate buckets) |
+| The `rate_limit(...)` flag | A per-handler limit |
+| `SingleFlightMiddleware` | Prevents one tap from being handled twice concurrently |
+| `AntiFloodPolicy` | Escalation: systematic flooding → a temporary mute of growing length |
 
-Лимит на хендлер объявляется рядом с ним:
+A per-handler limit is declared next to the handler:
 
 ```python
 @router.callback_query(RefreshCB.filter(), **rate_limit(3, 60, scope="refresh_button"))
 async def refresh_channel(...): ...
 ```
 
-Флаги читает только **внутренний** middleware: внешний выполняется до того,
-как диспетчер выбрал хендлер, и его флагов не знает.
+Flags are read only by the **inner** middleware: the outer one runs before the
+dispatcher has picked a handler and knows nothing of its flags.
 
-Если Redis недоступен, ограничитель не отключается, а временно переходит на
-счётчики в памяти процесса: защита от флуда перестаёт быть общей для реплик,
-но продолжает работать. После серии ошибок обращения к Redis прекращаются на
-15 секунд, чтобы не платить таймаутом за каждый запрос.
+If Redis is unavailable the limiter is not switched off but temporarily falls
+back to in-process counters: flood protection stops being shared across replicas
+but keeps working. After a series of errors, calls to Redis pause for 15 seconds
+so that every request does not pay a timeout.
 
-Без `REDIS_URL` бот поднимается на локальных хранилищах — это допустимо для
-одного экземпляра, но не для нескольких реплик: у каждой будет свой счётчик.
+Without `REDIS_URL` the bot starts on local storages — acceptable for a single
+instance but not for several replicas: each would keep its own counters.
 
-### Защитный контур
+### The security chain
 
-Слоёв защиты четыре, и порядок между ними не произвольный — он собран в
-одном месте, в `setup_security()` (`tg_bot/middlewares/security.py`).
+There are four layers, and the order between them is not arbitrary — it is
+assembled in one place, in `setup_security()` (`tg_bot/middlewares/security.py`).
 
-**1. Бюджет обращений.** Ведро с жетонами: сколько операций в единицу
-времени, с эскалацией наказаний за систематический флуд. Идёт первым не
-из соображений стоимости, а потому, что политика анти-флуда должна
-увидеть каждую попытку: слой, отбивающий обращение раньше, лишил бы её
-возможности когда-либо дойти до заглушки, и флудер получал бы вечное
-«слишком часто» вместо мьюта.
+**1. Request budget.** A token bucket: how many operations per unit of time,
+with escalating penalties for systematic flooding. It comes first not for
+cost reasons but because the anti-flood policy must see every attempt: a layer
+rejecting requests earlier would keep it from ever reaching the mute, and a
+flooder would get an eternal "too often" instead.
 
-**2. Жёсткий интервал.** Скользящее окно поверх отсортированного
-множества Redis: не чаще одного обращения в `SECURITY_COOLDOWN` секунд.
-Нужен потому, что ведро специально разрешает всплеск — при лимите «20 за
-минуту» все двадцать сообщений проходят за одну секунду. Обычно это
-удобно, но дорогие обработчики успевают наделать дел до того, как бюджет
-закончится. Окно даёт строгий пол независимо от остатка бюджета.
+**2. A hard interval.** A sliding window over a Redis sorted set: no more than
+one request every `SECURITY_COOLDOWN` seconds. It is needed because the bucket
+deliberately allows a burst — at a limit of "20 per minute" all twenty messages
+can pass within one second. That is usually convenient, but expensive handlers
+get a lot done before the budget runs out. The window imposes a strict floor
+regardless of the remaining budget.
 
-Отметки хранятся с уникальным членом на обращение. Это не деталь
-реализации, а условие работоспособности: общий член множества `ZADD`
-перезаписывал бы вместо добавления, и окно считало бы одно обращение
-вместо десяти.
+Marks are stored with a unique member per request. That is not an
+implementation detail but a condition of correctness: a shared set member would
+make `ZADD` overwrite instead of adding, and the window would count one request
+instead of ten.
 
-**3. Одиночный запуск.** Блокировка на время обработки нажатия по паре
-«пользователь + содержимое кнопки». Снимается сразу после хендлера.
+**3. Single flight.** A lock for the duration of handling a tap, keyed by the
+"user + button payload" pair. Released right after the handler.
 
-**4. Критические действия.** То, что нельзя выполнить дважды по ошибке:
-выставление счёта, активация пробного периода. Помечаются флагом
-`critical("имя")`, хендлеры с одним именем делят защиту.
+**4. Critical actions.** Things that must not be performed twice by accident:
+issuing an invoice, activating the trial. They are marked with the
+`critical("name")` flag, and handlers sharing a name share the protection.
 
-Отличие от одиночного запуска существенное. Там опасен одновременный
-повтор, здесь — ещё и повтор *сразу после успеха*: хендлер отработал за
-секунду, человек нажал второй раз через две, блокировка уже снята — и
-получил второй счёт. Поэтому используются два ключа: блокировка на время
-работы (её TTL — страховка от смерти процесса, а не рабочий параметр) и
-пауза, которая ставится только после успеха и истекает сама. После
-исключения пауза не ставится: неудачную попытку нужно дать повторить
-сразу, а не наказывать за чужой сбой.
+The difference from single flight is substantial. There, the danger is a
+concurrent repeat; here it is also a repeat *right after success*: the handler
+finished in a second, the person tapped again two seconds later, the lock is
+already released — and they got a second invoice. Hence two keys: a lock for the
+duration of the work (its TTL is insurance against a dead process, not a working
+parameter) and a cooldown that is set only after success and expires on its own.
+After an exception no cooldown is set: a failed attempt should be repeatable
+immediately, not punished for someone else's failure.
 
-Про redlock. Классический алгоритм рассчитан на несколько независимых
-мастеров Redis и кворум между ними. Здесь мастер один, и переносить сюда
-redlock значило бы имитировать его гарантии, не имея их. При одном
-мастере правильный примитив — `SET NX PX` с проверкой владельца при
-снятии, он и используется. Его граница: блокировка без fencing token, и
-при остановке процесса дольше TTL её может перехватить другой. Поэтому
-единственной защитой она не служит — окончательную однократность дают
-ограничения БД (уникальный ключ идемпотентности платежа, лимит
-незавершённых счетов), а этот слой снимает подавляющее большинство
-случаев дёшево и до похода в базу.
+About redlock. The classic algorithm assumes several independent Redis masters
+and a quorum between them. Here there is a single master, and porting redlock
+over would mean imitating its guarantees without having them. With one master
+the correct primitive is `SET NX PX` with an owner check on release, and that is
+what is used. Its boundary: a lock without a fencing token, which another process
+can seize if this one stalls for longer than the TTL. So it never serves as the
+only protection — final exactly-once comes from database constraints (the unique
+payment idempotency key, the cap on unfinished invoices), while this layer
+removes the vast majority of cases cheaply and before reaching the database.
 
-При недоступном хранилище защита критических действий по умолчанию
-**пропускает** запрос, а не отказывает: отказ означал бы неработающую
-оплату, тогда как повторный счёт всё равно отсекается уникальным ключом
-в базе. Обратное поведение включается `SECURITY_FAIL_CLOSED=true`.
+When the store is unavailable, protection of critical actions **lets the request
+through** by default rather than rejecting it: rejecting would mean payments do
+not work, whereas a duplicate invoice is cut off by the unique key in the
+database anyway. The opposite behaviour is enabled with
+`SECURITY_FAIL_CLOSED=true`.
 
-Сессия БД в этот контур не входит: её middleware внешний и должен
-охватывать в том числе фильтры, которым тоже нужна открытая транзакция.
-Границей транзакции служит обработка апдейта целиком — фиксация после
-успешного возврата из хендлера, откат при любом исключении.
+The database session is not part of this chain: its middleware is the outer one
+and must also cover the filters, which need an open transaction too. The
+transaction boundary is the handling of an update as a whole — commit after a
+successful return from the handler, rollback on any exception.
 
+## Repository layer
 
-## Репозиторный слой
+`BaseRepository[T]` provides the shared operations — `get_by_id`, `get_all`,
+`update`, `add`, `delete`, `exists`, `count`, `get_for_update`. Subclasses add
+the queries of their own area, and all SQL lives here and nowhere else.
 
-`BaseRepository[T]` даёт общие операции — `get_by_id`, `get_all`, `update`,
-`add`, `delete`, `exists`, `count`, `get_for_update`. Наследники добавляют
-запросы своей области, и весь SQL живёт только здесь.
+`update` performs `UPDATE ... RETURNING` in a single query. The "load the object,
+change attributes, save" sequence would cost two round trips to the database and
+leave a window between them in which a neighbouring transaction can modify the
+row. Where "read — modify — write" is genuinely needed, `get_for_update` is used.
 
-`update` выполняет `UPDATE ... RETURNING` одним запросом. Связка
-«загрузить объект, изменить атрибуты, сохранить» стоила бы двух обращений
-к базе и оставляла между ними окно, в котором строку успевает изменить
-соседняя транзакция. Там, где нужно именно «прочитать — изменить —
-записать», берётся `get_for_update`.
+Relationships are declared with `lazy="raise"`, so touching them outside a
+session fails — and rightly so: implicit loading in async code yields either an
+extra query per access or a crash outside the context. Where a relationship is
+needed it is loaded explicitly: `UserRepository.get_with_subscription` uses
+`selectinload` rather than `joinedload`, so the user row is not multiplied by the
+number of their subscriptions.
 
-Связи объявлены с `lazy="raise"`, поэтому обращение к ним вне сессии
-падает — и это правильно: неявная подгрузка в асинхронном коде даёт либо
-лишний запрос на каждое обращение, либо падение вне контекста. Где связь
-нужна, она загружается явно: `UserRepository.get_with_subscription`
-использует `selectinload`, а не `joinedload`, чтобы не размножать строку
-пользователя по числу его подписок.
+Driver errors do not leak out: the `handle_db_errors` decorator translates
+`IntegrityError` into `ConflictError`, server-cancelled transactions into
+`ConcurrencyError` and everything else into `RepositoryError`. Application code
+catches the layer's exceptions, not `SQLAlchemyError`.
 
-Ошибки драйвера наружу не протекают: декоратор `handle_db_errors`
-переводит `IntegrityError` в `ConflictError`, отменённые сервером
-транзакции — в `ConcurrencyError`, остальное — в `RepositoryError`.
-Прикладной код ловит исключения слоя, а не `SQLAlchemyError`.
+## Transactions and idempotency
 
-## Транзакции и идемпотентность
-
-Репозитории не вызывают `commit`: границу транзакции задаёт `UnitOfWork`,
-поэтому одна прикладная операция либо применяется целиком, либо не
-применяется вовсе.
+Repositories never call `commit`: the transaction boundary is set by
+`UnitOfWork`, so one application operation is either applied in full or not at
+all.
 
 ```python
 async with uow_factory() as uow:
@@ -808,65 +901,65 @@ async with uow_factory() as uow:
     await uow.commit()
 ```
 
-Выход из блока без `commit` откатывает изменения — забытая фиксация не
-приводит к частичной записи.
+Leaving the block without `commit` rolls the changes back — a forgotten commit
+never results in a partial write.
 
-Механизмы защиты от гонок:
+Mechanisms against races:
 
-| Задача | Приём |
+| Problem | Technique |
 |---|---|
-| Повторный `/start`, двойной тап «Оплатить» | `INSERT … ON CONFLICT … RETURNING` — решение принимает БД, окна между проверкой и вставкой нет |
-| Повторная доставка `successful_payment` | Блокировка строки счёта `SELECT … FOR UPDATE` |
-| Двойное начисление дней | Вставка события с `ON CONFLICT (payment_id) DO NOTHING` как точка принятия решения |
-| Продление подписки | Арифметика дат выражением в SQL (`GREATEST(expires_at, now()) + interval`), а не чтением в Python |
-| Создание подписки, которой ещё нет | Advisory-лок по пользователю: блокировать `FOR UPDATE` нечего, пока строки не существует |
-| Несколько воркеров над одной очередью | `FOR UPDATE SKIP LOCKED` + пометка в том же запросе |
-| Взаимоблокировки | `UnitOfWorkFactory.transaction` повторяет транзакцию целиком с экспоненциальной задержкой |
+| A repeated `/start`, a double tap on "Pay" | `INSERT … ON CONFLICT … RETURNING` — the database decides, with no window between check and insert |
+| A redelivered `successful_payment` | A row lock on the invoice, `SELECT … FOR UPDATE` |
+| Granting days twice | Inserting the event with `ON CONFLICT (payment_id) DO NOTHING` as the decision point |
+| Extending a subscription | Date arithmetic as a SQL expression (`GREATEST(expires_at, now()) + interval`) instead of reading into Python |
+| Creating a subscription that does not exist yet | An advisory lock on the user: there is nothing to lock `FOR UPDATE` while the row does not exist |
+| Several workers over one queue | `FOR UPDATE SKIP LOCKED` plus the mark in the same query |
+| Deadlocks | `UnitOfWorkFactory.transaction` retries the whole transaction with exponential backoff |
 
-## Миграции
+## Migrations
 
-Схема версионируется Alembic; приложение её не меняет.
+The schema is versioned by Alembic; the application never changes it.
 
 ```bash
-alembic upgrade head                          # применить
-alembic downgrade -1                          # откатить на шаг
-alembic revision --autogenerate -m "описание" # сгенерировать после правки моделей
-alembic check                                 # убедиться, что модели и БД совпадают
+alembic upgrade head                            # apply
+alembic downgrade -1                            # roll back one step
+alembic revision --autogenerate -m "description"  # generate after editing models
+alembic check                                   # verify models and DB agree
 ```
 
-В Docker миграции применяются автоматически перед стартом бота
-(`command` сервиса `bot`).
+In Docker, migrations are applied automatically before the bot starts (the
+`command` of the `bot` service).
 
-## Запуск в Docker
+## Running with Docker
 
 ```bash
-cp .env.example .env          # укажите BOT_TOKEN и пароль БД
+cp .env.example .env          # set BOT_TOKEN and the database password
 docker compose -f Docker/docker-compose.yml up -d --build
 docker compose -f Docker/docker-compose.yml logs -f bot worker
 ```
 
-## Локальный запуск
+## Running locally
 
-Нужен запущенный PostgreSQL. Alembic применяет миграции, но **не создаёт саму
-базу** — её нужно создать один раз вручную.
+A running PostgreSQL is required. Alembic applies migrations but **does not
+create the database itself** — that has to be done once by hand.
 
 ```bash
 python -m venv .venv
 . .venv/bin/activate                  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-cp .env.example .env                  # укажите BOT_TOKEN, поставьте DB_HOST=localhost
+cp .env.example .env                  # set BOT_TOKEN, set DB_HOST=localhost
 
-createdb -U postgres news_db          # или: psql -U postgres -c "CREATE DATABASE news_db"
-alembic upgrade head                  # применить схему
+createdb -U postgres news_db          # or: psql -U postgres -c "CREATE DATABASE news_db"
+alembic upgrade head                  # apply the schema
 
-python main.py                        # бот
-python -m worker                      # воркер — в отдельном терминале
+python main.py                        # the bot
+python -m worker                      # the worker — in a separate terminal
 ```
 
-Если `createdb` и `psql` не в `PATH` (типично для Windows-установки, где
-PostgreSQL стоит службой), базу можно создать средствами самого проекта —
-`asyncpg` уже установлен:
+If `createdb` and `psql` are not on the `PATH` (typical for a Windows install
+where PostgreSQL runs as a service), the database can be created with the
+project's own tools — `asyncpg` is already installed:
 
 ```bash
 python - <<'EOF'
@@ -880,131 +973,138 @@ asyncio.run(main())
 EOF
 ```
 
-Бот и воркер — два независимых процесса: воркер рассылает уведомления об
-истечении подписок и просрочивает неоплаченные счета. Без него бот работает,
-но подписки не будут закрываться по сроку.
+The bot and the worker are two independent processes: the worker sends
+subscription expiry notices and expires unpaid invoices. Without it the bot
+works, but subscriptions will not be closed when their time comes.
 
-При старте оба процесса проверяют базу и, если она недоступна или схема не
-накатана, завершаются с кодом `3` и внятным сообщением, а не падают позже на
-первом обращении пользователя.
+At startup both processes check the database and, if it is unavailable or the
+schema is not applied, exit with code `3` and a clear message instead of failing
+later on the first user request.
 
-**Одновременно может опрашивать Telegram только один экземпляр бота.** Второй
-получит `TelegramConflictError: terminated by other getUpdates request` — в том
-числе если параллельно поднят контейнер из Docker или забытый процесс с прошлого
-запуска.
+**Only one bot instance may poll Telegram at a time.** A second one gets
+`TelegramConflictError: terminated by other getUpdates request` — including when
+a Docker container is up in parallel, or a forgotten process from the previous
+run.
 
-## Тесты
+## Tests
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                                # весь набор
-pytest -m "not db"                    # без тестов, которым нужен PostgreSQL
+pytest                                # the whole suite
+pytest -m "not db"                    # without tests that need PostgreSQL
 ```
 
-Тесты слоя данных работают на отдельной базе `news_db_test` (создаётся
-автоматически). Если PostgreSQL недоступен, они пропускаются с объяснением, а
-не падают. Адрес тестовой базы задаётся через `TEST_DATABASE_URL` либо
-`TEST_DB_HOST` / `TEST_DB_PORT` / `TEST_DB_USER` / `TEST_DB_PASS` /
-`TEST_DB_NAME`.
+Data-layer tests run against a separate `news_db_test` database (created
+automatically). If PostgreSQL is unavailable they are skipped with an
+explanation rather than failing. The test database address is set through
+`TEST_DATABASE_URL` or `TEST_DB_HOST` / `TEST_DB_PORT` / `TEST_DB_USER` /
+`TEST_DB_PASS` / `TEST_DB_NAME`.
 
-### Как устроена изоляция
+### How isolation works
 
-Изменения **фиксируются по-настоящему**, а таблицы очищаются `TRUNCATE` после
-теста. Привычный приём «обернуть тест во внешнюю транзакцию и откатить её»
-здесь неприменим: `UnitOfWork` и фоновые задачи открывают транзакции сами и
-сами их фиксируют. Подсунуть им чужую сессию — значит проверять не тот код,
-который работает в проде: пропали бы и `commit()` в границе апдейта, и
-`FOR UPDATE SKIP LOCKED` в очередях воркера, и advisory-локи. Попытка
-удержать откат вложенными точками сохранения разваливалась на неупорядоченном
-их освобождении.
+Changes are **really committed**, and tables are cleared with `TRUNCATE` after
+the test. The familiar trick of wrapping a test in an outer transaction and
+rolling it back does not apply here: `UnitOfWork` and the background jobs open
+transactions themselves and commit them themselves. Handing them someone else's
+session means testing code other than the one that runs in production — the
+`commit()` at the update boundary, the `FOR UPDATE SKIP LOCKED` in worker queues
+and the advisory locks would all disappear. An attempt to keep the rollback with
+nested savepoints fell apart on their out-of-order release.
 
-Цена решения — тесты нельзя гонять параллельно по одной базе, и `TRUNCATE`
-ждёт освобождения таблиц не дольше пяти секунд: незакрытая транзакция теста
-должна давать внятную ошибку, а не бесконечно висящий прогон.
+The price of that decision: tests cannot be run in parallel against one database,
+and `TRUNCATE` waits no longer than five seconds for the tables to be free — an
+unclosed transaction in a test must produce a clear error rather than an endlessly
+hanging run.
 
-Сессия теста и сессия проверяемого кода — **разные**. Это не мелочь: объект,
-загруженный одной сессией, не видит изменений, сделанных другой, и проверка
-через тот же объект показала бы устаревшее состояние. Поэтому фабрики данных
-пишут через `db_session`, а результат перечитывается через `uow`.
+The test's session and the session of the code under test are **different**. That
+is not a detail: an object loaded by one session does not see changes made by
+another, and asserting through that same object would show stale state. So data
+factories write through `db_session` while the result is re-read through `uow`.
 
-### Из чего состоит набор
+### What the suite covers
 
-| Файл | Что проверяет |
+| File | What it verifies |
 |---|---|
-| `test_repositories.py` | CRUD, предзагрузка связей, ограничения уникальности платежей |
-| `test_billing.py` | Три шага оплаты звёздами и идемпотентность повторного события |
-| `test_workers.py` | Истечение подписок, предупреждения и уборка счетов под `freezegun` |
-| `test_security_middleware.py` | Скользящее окно, жёсткий интервал, блокировки критических действий |
-| `test_broadcaster.py` | Выборка аудитории, лимит исходящих, недоступные адресаты |
-| `test_growth_services.py` | Рефералы и промокоды: начисление и защита от повторов |
-| `test_admin_panel.py` | Права доступа и арифметика бизнес-метрик |
-| `test_crypto.py`, `test_webhook.py` | Оплата криптовалютой и приём вебхуков |
-| `test_publisher.py`, `test_tracker.py`, `test_search.py`, `test_dedup_index.py` | Автопостинг, трекинг ссылок, поиск, дедупликация |
-| `test_conftest_smoke.py` | Сам стенд: фикстуры и заморозка времени |
+| `test_repositories.py` | CRUD, relationship preloading, payment uniqueness constraints |
+| `test_billing.py` | The three steps of paying with Stars and idempotency of a repeated event |
+| `test_workers.py` | Subscription expiry, warnings and invoice cleanup under `freezegun` |
+| `test_security_middleware.py` | The sliding window, the hard interval, locks on critical actions |
+| `test_broadcaster.py` | Audience selection, the outgoing rate limit, unreachable recipients |
+| `test_growth_services.py` | Referrals and promo codes: granting and protection against repeats |
+| `test_admin_panel.py` | Access rights and the arithmetic of business metrics |
+| `test_crypto.py`, `test_webhook.py` | Crypto payments and webhook handling |
+| `test_publisher.py`, `test_tracker.py`, `test_search.py`, `test_dedup_index.py` | Auto-posting, link tracking, search, deduplication |
+| `test_conftest_smoke.py` | The harness itself: fixtures and time freezing |
 
-Время замораживается через `freezegun` с `real_asyncio=True`. Флаг
-обязателен: freezegun подменяет `time.monotonic`, на котором построены
-таймеры цикла событий, и без него любой `await asyncio.sleep()` внутри теста
-завис бы навсегда. Заморозка не распространяется на PostgreSQL — там, где
-решение принимает сервер, момент времени передаётся в запрос явно.
+Time is frozen with `freezegun` and `real_asyncio=True`. The flag is mandatory:
+freezegun replaces `time.monotonic`, on which the event loop's timers are built,
+and without it any `await asyncio.sleep()` inside a test would hang forever. The
+freeze does not extend to PostgreSQL — where the server makes the decision, the
+point in time is passed into the query explicitly.
 
-Redis-бэкенд ограничителя проверяется на `fakeredis` (ставится из
-`requirements-dev.txt`); чтобы прогнать те же тесты на настоящем Redis, задайте
+The limiter's Redis backend is tested against `fakeredis` (installed from
+`requirements-dev.txt`); to run the same tests against a real Redis, set
 `TEST_REDIS_URL`.
 
-## Переменные окружения
+## Environment variables
 
-| Переменная | По умолчанию | Назначение |
+| Variable | Default | Purpose |
 |---|---|---|
-| `BOT_TOKEN` | — (обязательна) | Токен бота от @BotFather |
-| `DB_USER` / `DB_PASS` / `DB_NAME` | `postgres` / `postgres` / `news_db` | Доступ к PostgreSQL |
-| `DB_HOST` / `DB_PORT` | `db` / `5432` | Адрес БД. Вне Docker поставьте `localhost`; в compose значение переопределяется на `db` |
-| `LOG_LEVEL` | `INFO` | Уровень логирования |
-| `DISPLAY_TZ` | `UTC` | Таймзона отображения дат |
-| `REDIS_URL` | — | Redis для лимитов и FSM; пусто — хранилища в памяти |
-| `RATE_LIMIT_ENABLED` | `true` | Включение ограничения частоты |
-| `RL_MESSAGE_LIMIT` / `RL_MESSAGE_WINDOW` | `20` / `60` | Лимит сообщений |
-| `RL_CALLBACK_LIMIT` / `RL_CALLBACK_WINDOW` | `30` / `60` | Лимит нажатий на кнопки |
-| `RL_MUTE_DURATIONS` | `30,120,600` | Длительности заглушки по номеру нарушения |
-| `SECURITY_COOLDOWN` | `0.5` | Минимальный интервал между обращениями, секунды |
-| `SECURITY_LOCK_TTL` | `30` | Время жизни блокировки критического действия, секунды |
-| `SECURITY_ACTION_COOLDOWN` | `5` | Пауза после успешного критического действия, секунды |
-| `SECURITY_FAIL_CLOSED` | `false` | Отказывать в критическом действии при недоступном Redis |
-| `INVOICE_TTL_MINUTES` | `15` | Сколько действует выставленный счёт |
-| `MAX_PENDING_INVOICES` | `3` | Лимит незавершённых счетов на пользователя |
-| `TRIAL_ENABLED` | `true` | Выдача пробного периода |
-| `TRIAL_DAYS` | `7` | Длительность пробного периода, суток |
-| `TRIAL_REQUIRE_CONTACT` | `true` | Требовать подтверждённый телефон |
-| `TRIAL_FINGERPRINT_SECRET` | — (обязательна при проверке телефона) | Секрет HMAC для отпечатков |
-| `ADMIN_IDS` | — | Telegram ID администраторов через запятую; стартовый список для выдачи прав |
-| `REFERRAL_BONUS_DAYS` | `3` | Сколько суток получает каждая сторона за приглашение |
-| `BROADCAST_RATE` | `25` | Сообщений в секунду; общий лимит исходящих у бота |
-| `BROADCAST_WORKERS` | `8` | Сколько отправок идёт одновременно |
-| `BROADCAST_PAGE_SIZE` | `500` | Размер страницы выборки адресатов |
-| `WORKER_EXPIRY_NOTICE_HOURS` | `24` | За сколько часов предупреждать об окончании |
-| `WORKER_EXPIRY_INTERVAL` | `900` | Как часто искать истекающие подписки, секунды |
-| `WORKER_EXPIRATION_INTERVAL` | `300` | Как часто отзывать доступ, секунды |
-| `WORKER_PUBLISH_INTERVAL` | `30` | Как часто разбирать очередь публикаций, секунды |
-| `WORKER_INVOICE_INTERVAL` | `600` | Как часто просрочивать неоплаченные счета, секунды |
-| `WORKER_BATCH_SIZE` | `100` | Размер порции за один проход |
-| `DEDUP_ENABLED` | `true` | Склейка повторов новостей |
-| `DEDUP_HAMMING_THRESHOLD` | `16` | Порог отбора кандидатов по simhash |
-| `DEDUP_SIMILARITY_THRESHOLD` | `0.75` | Порог Jaccard для подтверждения |
-| `DEDUP_LOOKBACK_HOURS` | `48` | Как глубоко искать оригинал |
-| `PARSE_COOLDOWN` | `60` | Пауза между обновлениями одного канала, секунды |
-| `MAX_POSTS` | `10` | Сколько постов показывать |
-| `REQUEST_TIMEOUT` / `MEDIA_TIMEOUT` | `15` / `30` | Таймауты HTTP, секунды |
-| `MAX_MEDIA_BYTES` | `20971520` | Лимит размера одного вложения |
-| `DB_ECHO` | `false` | Печать SQL в лог |
+| `BOT_TOKEN` | — (required) | Bot token from @BotFather |
+| `DB_USER` / `DB_PASS` / `DB_NAME` | `postgres` / `postgres` / `news_db` | PostgreSQL credentials |
+| `DB_HOST` / `DB_PORT` | `db` / `5432` | Database address. Outside Docker use `localhost`; in compose the value is overridden with `db` |
+| `LOG_LEVEL` | `INFO` | Logging level |
+| `DISPLAY_TZ` | `UTC` | Timezone used to display dates |
+| `REDIS_URL` | — | Redis for limits and FSM; empty means in-memory storages |
+| `RATE_LIMIT_ENABLED` | `true` | Enables rate limiting |
+| `RL_MESSAGE_LIMIT` / `RL_MESSAGE_WINDOW` | `20` / `60` | Message limit |
+| `RL_CALLBACK_LIMIT` / `RL_CALLBACK_WINDOW` | `30` / `60` | Button tap limit |
+| `RL_MUTE_DURATIONS` | `30,120,600` | Mute lengths by violation number |
+| `SECURITY_COOLDOWN` | `0.5` | Minimum interval between requests, seconds |
+| `SECURITY_LOCK_TTL` | `30` | Lifetime of a critical-action lock, seconds |
+| `SECURITY_ACTION_COOLDOWN` | `5` | Pause after a successful critical action, seconds |
+| `SECURITY_FAIL_CLOSED` | `false` | Reject critical actions when Redis is unavailable |
+| `INVOICE_TTL_MINUTES` | `15` | How long an issued invoice stays valid |
+| `MAX_PENDING_INVOICES` | `3` | Cap on unfinished invoices per user |
+| `TRIAL_ENABLED` | `true` | Trial period granting |
+| `TRIAL_DAYS` | `7` | Trial length, days |
+| `TRIAL_REQUIRE_CONTACT` | `true` | Require a verified phone number |
+| `TRIAL_FINGERPRINT_SECRET` | — (required with phone verification) | HMAC secret for fingerprints |
+| `ADMIN_IDS` | — | Comma-separated Telegram IDs of administrators; the bootstrap list |
+| `REFERRAL_BONUS_DAYS` | `3` | Days each side gets for an invitation |
+| `BROADCAST_RATE` | `25` | Messages per second; the bot's shared outgoing limit |
+| `BROADCAST_WORKERS` | `8` | How many sends run concurrently |
+| `BROADCAST_PAGE_SIZE` | `500` | Recipient page size |
+| `WORKER_EXPIRY_NOTICE_HOURS` | `24` | How many hours ahead to warn about expiry |
+| `WORKER_EXPIRY_INTERVAL` | `900` | How often to look for expiring subscriptions, seconds |
+| `WORKER_EXPIRATION_INTERVAL` | `300` | How often to revoke access, seconds |
+| `WORKER_PUBLISH_INTERVAL` | `30` | How often to drain the publication queue, seconds |
+| `WORKER_INVOICE_INTERVAL` | `600` | How often to expire unpaid invoices, seconds |
+| `WORKER_BATCH_SIZE` | `100` | Batch size per pass |
+| `DEDUP_ENABLED` | `true` | Collapsing repeated news |
+| `DEDUP_HAMMING_THRESHOLD` | `16` | Simhash candidate selection threshold |
+| `DEDUP_SIMILARITY_THRESHOLD` | `0.75` | Jaccard confirmation threshold |
+| `DEDUP_LOOKBACK_HOURS` | `48` | How far back to look for the original |
+| `PARSE_COOLDOWN` | `60` | Pause between refreshes of one channel, seconds |
+| `MAX_POSTS` | `10` | How many posts to show |
+| `REQUEST_TIMEOUT` / `MEDIA_TIMEOUT` | `15` / `30` | HTTP timeouts, seconds |
+| `MAX_MEDIA_BYTES` | `20971520` | Size limit for one attachment |
+| `DB_ECHO` | `false` | Print SQL to the log |
 
-## Замечания по эксплуатации
+## Operational notes
 
-* ENUM-типы PostgreSQL Alembic не отслеживает автоматически: при добавлении
-  нового значения в перечисление правьте миграцию вручную
-  (`ALTER TYPE ... ADD VALUE`).
-* Без `REDIS_URL` ограничения частоты и состояния FSM живут в памяти процесса:
-  для одного экземпляра это допустимо, но при нескольких репликах суммарный
-  лимит окажется кратно выше заявленного, а состояния потеряются при
-  перезапуске. Для продакшена настройте Redis.
-* Бот работает только с каналами из белого списка в `core/config.py` —
-  произвольные адреса из callback_data не принимаются.
+* Alembic does not track PostgreSQL ENUM types automatically: when adding a new
+  value to an enum, edit the migration by hand (`ALTER TYPE ... ADD VALUE`).
+* Without `REDIS_URL`, rate limits and FSM state live in process memory: fine for
+  a single instance, but with several replicas the effective limit becomes a
+  multiple of the declared one and state is lost on restart. Configure Redis for
+  production.
+* The bot only works with channels from the allowlist in `core/config.py` —
+  arbitrary addresses from callback_data are not accepted.
+
+---
+
+<p align="center">
+  <a href="https://t.me/dekelia_bot">@dekelia_bot</a> ·
+  <a href="https://github.com/vindibee/Telegram-News-Aggregator">Source on GitHub</a>
+</p>
